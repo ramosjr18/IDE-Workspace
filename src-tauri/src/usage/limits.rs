@@ -63,15 +63,42 @@ struct CachedProbe {
     next: i64,
     probe: Probe,
 }
-#[derive(Default)]
 pub(super) struct LimitsState {
+    backoff_file: Option<std::path::PathBuf>,
+    backoff: tokio::sync::Mutex<Option<HashMap<String, i64>>>,
     cache: tokio::sync::Mutex<HashMap<String, CachedProbe>>,
+}
+impl Default for LimitsState {
+    fn default() -> Self {
+        Self {
+            backoff_file: backoff_path(),
+            backoff: Default::default(),
+            cache: Default::default(),
+        }
+    }
 }
 impl LimitsState {
     pub(super) async fn collect(&self, r: &mut UsageRecord) {
-        if r.id != "codex" {
+        if !["codex", "claude"].contains(&r.id.as_str()) {
             return;
         }
+        let id = r.id.clone();
+        self.collect_with(r, async {
+            match id.as_str() {
+                "codex" => codex().await,
+                "claude" => claude(self, &HttpTransport)
+                    .await
+                    .unwrap_or_else(Probe::failed),
+                _ => Probe::default(),
+            }
+        })
+        .await;
+    }
+    async fn collect_with(
+        &self,
+        r: &mut UsageRecord,
+        work: impl std::future::Future<Output = Probe>,
+    ) {
         // The outer usage cache serializes collections; individual probes run concurrently.
         let now = Utc::now().timestamp();
         {
@@ -83,11 +110,17 @@ impl LimitsState {
                 return;
             }
         }
-        let probe = codex().await;
+        let deadline = self.deadline(&r.id).await;
+        let probe = if deadline > now {
+            Probe::failed(Failure::Http(429))
+        } else {
+            work.await
+        };
+        let next = (now + 300).max(self.deadline(&r.id).await);
         self.cache.lock().await.insert(
             r.id.clone(),
             CachedProbe {
-                next: now + 300,
+                next,
                 probe: probe.clone(),
             },
         );
@@ -272,5 +305,390 @@ mod tests {
         let snake =
             json!({"primary":{"used_percent":7,"window_minutes":300,"resets_at":1900000000}});
         assert_eq!(codex_limits(&snake).limits[0].percent, 0.07);
+    }
+}
+// This type intentionally has neither Debug nor Serialize.
+struct Secret(String);
+impl<'de> serde::Deserialize<'de> for Secret {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        <String as serde::Deserialize>::deserialize(d).map(Self)
+    }
+}
+#[derive(Clone, Copy)]
+enum Endpoint {
+    Claude,
+    OpenCode,
+    Copilot,
+}
+impl Endpoint {
+    fn url(self) -> &'static str {
+        match self {
+            Self::Claude => "https://api.anthropic.com/api/oauth/usage",
+            Self::OpenCode => "https://opencode.ai/api/go/status",
+            Self::Copilot => "https://api.github.com/copilot_internal/user",
+        }
+    }
+}
+struct HttpResponse {
+    status: u16,
+    retry_after: Option<String>,
+    body: Value,
+}
+trait Transport: Sync {
+    fn get<'a>(
+        &'a self,
+        endpoint: Endpoint,
+        token: &'a Secret,
+        headers: Vec<(&'static str, String)>,
+    ) -> futures::future::BoxFuture<'a, Result<HttpResponse, Failure>>;
+}
+struct HttpTransport;
+impl Transport for HttpTransport {
+    fn get<'a>(
+        &'a self,
+        endpoint: Endpoint,
+        token: &'a Secret,
+        headers: Vec<(&'static str, String)>,
+    ) -> futures::future::BoxFuture<'a, Result<HttpResponse, Failure>> {
+        Box::pin(async move {
+            let client = reqwest::Client::builder()
+                .https_only(true)
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|_| Failure::Unavailable)?;
+            let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token.0))
+                .map_err(|_| Failure::NoSession)?;
+            auth.set_sensitive(true);
+            let mut request = client
+                .get(endpoint.url())
+                .header(reqwest::header::AUTHORIZATION, auth)
+                .header("Accept", "application/json")
+                .header("User-Agent", "ide-workspace-usage/1");
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let mut response = request.send().await.map_err(|_| Failure::Unavailable)?;
+            let status = response.status().as_u16();
+            let retry_after = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            if status != 200 {
+                return Ok(HttpResponse {
+                    status,
+                    retry_after,
+                    body: Value::Null,
+                });
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|_| Failure::Unavailable)? {
+                if bytes.len() + chunk.len() > 1024 * 1024 {
+                    return Err(Failure::InvalidResponse);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let body = serde_json::from_slice(&bytes).map_err(|_| Failure::InvalidResponse)?;
+            Ok(HttpResponse {
+                status,
+                retry_after,
+                body,
+            })
+        })
+    }
+}
+fn retry_deadline(value: Option<&str>, now: i64) -> i64 {
+    let until = value
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .map(|n| now.saturating_add(n.max(0)))
+        .or_else(|| {
+            value
+                .and_then(|s| httpdate::parse_http_date(s).ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs().min(i64::MAX as u64) as i64)
+        })
+        .unwrap_or(now.saturating_add(300));
+    until.max(now.saturating_add(300))
+}
+fn backoff_path() -> Option<std::path::PathBuf> {
+    dirs::data_dir().map(|p| p.join("usage-backoff.json"))
+}
+impl LimitsState {
+    async fn deadline(&self, id: &str) -> i64 {
+        let mut saved = self.backoff.lock().await;
+        if saved.is_none() {
+            let path = self.backoff_file.clone();
+            *saved = Some(
+                tauri::async_runtime::spawn_blocking(move || {
+                    path.and_then(|p| std::fs::read(p).ok())
+                        .and_then(|b| serde_json::from_slice::<HashMap<String, i64>>(&b).ok())
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default(),
+            );
+        }
+        *saved.as_ref().unwrap().get(id).unwrap_or(&0)
+    }
+    async fn save_backoff(&self, id: &str, until: i64) -> Result<(), Failure> {
+        let mut saved = self.backoff.lock().await;
+        saved
+            .get_or_insert_with(HashMap::new)
+            .insert(id.into(), until);
+        let values = saved.clone().unwrap_or_default();
+        let path = self.backoff_file.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let path = path.ok_or(Failure::Unavailable)?;
+            std::fs::create_dir_all(path.parent().ok_or(Failure::Unavailable)?)
+                .map_err(|_| Failure::Unavailable)?;
+            // Contains only agent IDs and numeric deadlines; never credential or response data.
+            let bytes = serde_json::to_vec(&values).map_err(|_| Failure::Unavailable)?;
+            std::fs::write(path, bytes).map_err(|_| Failure::Unavailable)
+        })
+        .await
+        .map_err(|_| Failure::Unavailable)?
+    }
+    async fn request(
+        &self,
+        id: &str,
+        transport: &dyn Transport,
+        endpoint: Endpoint,
+        token: &Secret,
+        headers: Vec<(&'static str, String)>,
+    ) -> Result<Value, Failure> {
+        let response = transport.get(endpoint, token, headers).await?;
+        if response.status == 429 {
+            let until = retry_deadline(response.retry_after.as_deref(), Utc::now().timestamp());
+            self.save_backoff(id, until).await?;
+        }
+        if response.status != 200 {
+            return Err(Failure::Http(response.status));
+        }
+        Ok(response.body)
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeOauth {
+    access_token: Secret,
+    expires_at: Option<i64>,
+    subscription_type: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct ClaudeCredentials {
+    #[serde(rename = "claudeAiOauth")]
+    oauth: ClaudeOauth,
+}
+async fn claude_credentials() -> Result<ClaudeOauth, Failure> {
+    let file = super::local::claude_dir().join(".credentials.json");
+    let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(file).ok())
+        .await
+        .ok()
+        .flatten();
+    if let Some(bytes) = bytes {
+        return serde_json::from_slice::<ClaudeCredentials>(&bytes)
+            .map(|v| v.oauth)
+            .map_err(|_| Failure::NoSession);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = Command::new("security");
+        cmd.args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+        if let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
+            if output.status.success() {
+                return serde_json::from_slice::<ClaudeCredentials>(&output.stdout)
+                    .map(|v| v.oauth)
+                    .map_err(|_| Failure::NoSession);
+            }
+        }
+    }
+    Err(Failure::NoSession)
+}
+fn claude_limits(v: &Value) -> Result<Probe, Failure> {
+    if !v.is_object() {
+        return Err(Failure::InvalidResponse);
+    }
+    let mut probe = Probe::default();
+    for (key, label) in [("five_hour", "Sesión (5 h)"), ("seven_day", "Semanal")] {
+        let w = &v[key];
+        let Some(n) = w["utilization"].as_f64() else {
+            continue;
+        };
+        probe.limits.push(UsageLimit {
+            label: label.into(),
+            percent: (n / 100.0).clamp(0.0, 1.0),
+            resets_at: reset(&w["resets_at"]),
+        });
+    }
+    if probe.limits.is_empty() {
+        return Err(Failure::InvalidResponse);
+    }
+    Ok(probe)
+}
+async fn claude(state: &LimitsState, transport: &dyn Transport) -> Result<Probe, Failure> {
+    let mut credentials = claude_credentials().await?;
+    if credentials
+        .expires_at
+        .is_some_and(|at| at <= Utc::now().timestamp_millis() + 300_000)
+    {
+        drop(credentials);
+        let mut cmd = command("claude").map_err(|_| Failure::Expired)?;
+        cmd.args(["-p", "ok"]);
+        let status = tokio::time::timeout(Duration::from_secs(60), cmd.status()).await;
+        if !matches!(status, Ok(Ok(s)) if s.success()) {
+            return Err(Failure::Expired);
+        }
+        credentials = claude_credentials().await?;
+        if credentials
+            .expires_at
+            .is_some_and(|at| at <= Utc::now().timestamp_millis())
+        {
+            return Err(Failure::Expired);
+        }
+    }
+    if credentials.access_token.0.is_empty() {
+        return Err(Failure::NoSession);
+    }
+    let response = state
+        .request(
+            "claude",
+            transport,
+            Endpoint::Claude,
+            &credentials.access_token,
+            vec![("anthropic-beta", "oauth-2025-04-20".into())],
+        )
+        .await?;
+    let mut probe = claude_limits(&response)?;
+    probe.plan = credentials
+        .subscription_type
+        .as_ref()
+        .and_then(|s| plan(&Value::String(s.clone())));
+    Ok(probe)
+}
+
+#[cfg(test)]
+#[test]
+fn claude_response_and_retry_after() {
+    let v: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/usage/claude-limits.json"
+    ))
+    .unwrap();
+    let probe = claude_limits(&v).ok().unwrap();
+    assert_eq!(probe.limits.len(), 2);
+    assert_eq!(probe.limits[0].percent, 0.11);
+    assert_eq!(probe.limits[1].percent, 0.47);
+    assert_eq!(retry_deadline(Some("900"), 1000), 1900);
+    assert_eq!(
+        retry_deadline(Some("Thu, 01 Jan 1970 00:30:00 GMT"), 1000),
+        1800
+    );
+    assert_eq!(retry_deadline(Some("bad"), 1000), 1300);
+    assert_eq!(retry_deadline(Some("-2"), 1000), 1300);
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+    struct Fake {
+        status: u16,
+        body: Value,
+    }
+    impl Transport for Fake {
+        fn get<'a>(
+            &'a self,
+            endpoint: Endpoint,
+            token: &'a Secret,
+            headers: Vec<(&'static str, String)>,
+        ) -> futures::future::BoxFuture<'a, Result<HttpResponse, Failure>> {
+            Box::pin(async move {
+                assert_eq!(endpoint.url(), "https://api.anthropic.com/api/oauth/usage");
+                assert!(!token.0.is_empty());
+                assert_eq!(headers[0].0, "anthropic-beta");
+                Ok(HttpResponse {
+                    status: self.status,
+                    retry_after: Some("900".into()),
+                    body: self.body.clone(),
+                })
+            })
+        }
+    }
+    #[tokio::test]
+    async fn simulated_http_and_persistent_backoff() {
+        let path =
+            std::env::temp_dir().join(format!("usage-backoff-{}.json", uuid::Uuid::new_v4()));
+        let state = LimitsState {
+            backoff_file: Some(path.clone()),
+            ..Default::default()
+        };
+        let token = Secret("test-only".into());
+        let headers = || vec![("anthropic-beta", "oauth-2025-04-20".into())];
+        let fake = Fake {
+            status: 200,
+            body: serde_json::from_str(include_str!(
+                "../../tests/fixtures/usage/claude-limits.json"
+            ))
+            .unwrap(),
+        };
+        let response = state
+            .request("claude", &fake, Endpoint::Claude, &token, headers())
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(
+            claude_limits(&response).ok().unwrap().limits[0].percent,
+            0.11
+        );
+        let fake = Fake {
+            status: 429,
+            body: json!({"error":"must never be displayed"}),
+        };
+        assert!(matches!(
+            state
+                .request("claude", &fake, Endpoint::Claude, &token, headers())
+                .await,
+            Err(Failure::Http(429))
+        ));
+        let restarted = LimitsState {
+            backoff_file: Some(path.clone()),
+            ..Default::default()
+        };
+        assert!(restarted.deadline("claude").await >= Utc::now().timestamp() + 899);
+        let disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(disk["claude"].is_i64());
+        assert_eq!(disk.as_object().unwrap().len(), 1);
+        let mut r = UsageRecord::empty("claude", "Claude");
+        restarted
+            .collect_with(&mut r, async { panic!("backoff must prevent requests") })
+            .await;
+        assert!(matches!(r.status, UsageStatus::Unavailable));
+        std::fs::remove_file(path).unwrap();
+    }
+    #[tokio::test]
+    async fn refresh_cannot_bypass_five_minute_interval() {
+        let state = LimitsState {
+            backoff_file: None,
+            ..Default::default()
+        };
+        let mut r = UsageRecord::empty("codex", "Codex");
+        state
+            .collect_with(&mut r, async {
+                codex_limits(&json!({"primary":{"usedPercent":1}}))
+            })
+            .await;
+        state
+            .collect_with(&mut r, async { panic!("second attempt within 5 minutes") })
+            .await;
+        assert_eq!(r.limits[0].percent, 0.01);
     }
 }
