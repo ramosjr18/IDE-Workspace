@@ -15,6 +15,7 @@ mod store;
 mod stream;
 mod term;
 mod workspace;
+mod usage;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -407,6 +408,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Busy::default())
+        .manage(usage::UsageState::default())
         .manage(Running::default())
         .manage(Arc::new(council::Runs::default()))
         .manage(CurrentProject(Mutex::new(initial.clone())))
@@ -428,6 +430,7 @@ pub fn run() {
             read_head,
             write_file,
             list_agents,
+            usage::get_usage,
             chat,
             cancel_chat,
             council_roles,
