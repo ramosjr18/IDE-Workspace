@@ -68,6 +68,40 @@ pub struct Synthesis {
     pub document: String,
 }
 
+/// Evaluador: un agente propio del IDE que, tras cada síntesis, juzga con ojos nuevos si lo
+/// convergido se sostiene. Corre sobre una CLI elegida al azar (distinta del moderador) y, si no
+/// le convence, manda al consejo a otra ronda con sus objeciones, hasta un máximo de rondas.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Judge {
+    pub enabled: bool,
+    /// CLIs entre las que se elige al azar (las disponibles cuando se convocó).
+    pub pool: Vec<String>,
+    /// Rondas que puede pedir el evaluador por su cuenta.
+    pub max_rounds: u32,
+    /// Rondas que ya ha pedido.
+    #[serde(default)]
+    pub used_rounds: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Verdict {
+    pub round: u32,
+    pub agent: String,
+    pub agent_name: String,
+    /// aprobar | otra_ronda | sin_veredicto
+    pub decision: String,
+    #[serde(default)]
+    pub confidence: Option<u32>,
+    pub reasons: Vec<String>,
+    /// Preguntas u objeciones que el evaluador deja al consejo.
+    pub questions: Vec<String>,
+    /// El evaluador quería otra ronda, pero ya no quedaban rondas automáticas.
+    #[serde(default)]
+    pub capped: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Council {
@@ -91,6 +125,10 @@ pub struct Council {
     pub document_path: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub judge: Judge,
+    #[serde(default)]
+    pub verdicts: Vec<Verdict>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -155,6 +193,7 @@ pub fn create(
     context: String,
     members: Vec<NewMember>,
     moderator: String,
+    judge: Judge,
 ) -> Result<Council, String> {
     if topic.trim().is_empty() {
         return Err("Escribe el tema del consejo".into());
@@ -187,6 +226,8 @@ pub fn create(
         synthesis: None,
         document_path: None,
         error: None,
+        judge: Judge { used_rounds: 0, ..judge },
+        verdicts: vec![],
         created_at: ts.clone(),
         updated_at: ts,
     };
@@ -265,6 +306,72 @@ pub fn converge_prompt(c: &Council, agent: &Agent) -> String {
         cards_text(&all),
         output_name(&c.output),
     )
+}
+
+pub fn judge_prompt(c: &Council, agent: &Agent) -> String {
+    let all: Vec<&Card> = c.cards.iter().collect();
+    let s = c.synthesis.clone().unwrap_or_default();
+    format!(
+        "Eres {} y actúas como EVALUADOR INDEPENDIENTE de un consejo de asistentes de IA. No has participado en el debate. Tu trabajo es decidir si lo que el consejo ha convergido es correcto y está bien fundamentado, o si necesita otra ronda.\n\
+         Estás en MODO SOLO LECTURA: puedes leer el repositorio para comprobar afirmaciones, pero no modifiques nada.\n\n\
+         TEMA: {}\n\nCONTEXTO:\n{}\n\nAPORTACIONES DEL CONSEJO:\n{}\n\nSÍNTESIS DEL MODERADOR\nAcuerdos:\n- {}\nPuntos abiertos:\n- {}\n\nDOCUMENTO PROPUESTO:\n{}\n\n\
+         Comprueba: que la decisión responde al tema; que recoge con justicia las objeciones importantes; que no contradice el código o el contexto; que no deja abiertos puntos que impidan aplicarla; y que el documento es coherente. Sé exigente pero no pidas otra ronda por detalles menores.\n\n\
+         {JSON_RULES}\n{{\"veredicto\": \"aprobar\", \"confianza\": 80, \"motivos\": [\"…\"], \"preguntas\": [\"…\"]}}\n\
+         «veredicto» es «aprobar» u «otra_ronda». «confianza» va de 0 a 100. «motivos»: de 1 a 4 frases que justifican el veredicto. «preguntas»: solo si pides otra ronda, de 1 a 4 objeciones o preguntas concretas que el consejo debe resolver.",
+        agent.name,
+        c.topic,
+        if c.context.trim().is_empty() { "(sin contexto adicional)" } else { c.context.trim() },
+        cards_text(&all),
+        if s.agreements.is_empty() { "(ninguno)".into() } else { s.agreements.join("\n- ") },
+        if s.open.is_empty() { "(ninguno)".into() } else { s.open.join("\n- ") },
+        s.document,
+    )
+}
+
+/// Interpreta la respuesta del evaluador.
+pub fn parse_verdict(text: &str) -> (String, Option<u32>, Vec<String>, Vec<String>) {
+    let list = |v: &Value, keys: &[&str]| -> Vec<String> {
+        keys.iter()
+            .find_map(|k| v.get(*k).and_then(Value::as_array))
+            .map(|a| a.iter().filter_map(Value::as_str).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+            .unwrap_or_default()
+    };
+    if let Some(v) = extract_json(text) {
+        let raw = v.get("veredicto").or_else(|| v.get("verdict")).and_then(Value::as_str).unwrap_or("").to_lowercase();
+        let decision = if raw.contains("aprob") || raw.contains("approve") {
+            "aprobar"
+        } else if raw.contains("ronda") || raw.contains("round") || raw.contains("rechaz") {
+            "otra_ronda"
+        } else {
+            "sin_veredicto"
+        };
+        let confidence = v.get("confianza").or_else(|| v.get("confidence")).and_then(Value::as_u64).map(|n| n.min(100) as u32);
+        return (decision.into(), confidence, list(&v, &["motivos", "reasons"]), list(&v, &["preguntas", "questions"]));
+    }
+    let t: String = text.trim().chars().take(600).collect();
+    ("sin_veredicto".into(), None, if t.is_empty() { vec![] } else { vec![t] }, vec![])
+}
+
+fn rotate<T>(mut v: Vec<T>, seed: u64) -> Vec<T> {
+    if !v.is_empty() {
+        let n = (seed % v.len() as u64) as usize;
+        v.rotate_left(n);
+    }
+    v
+}
+
+/// CLIs candidatas para el evaluador, en orden aleatorio: nunca el moderador; primero quienes no
+/// participaron y después los participantes. Si la primera falla (sin cupo, sin sesión…), se usa la siguiente.
+pub fn judge_candidates(c: &Council, seed: u64) -> Vec<&'static Agent> {
+    let not_mod: Vec<&String> = c.judge.pool.iter().filter(|a| **a != c.moderator).collect();
+    let (outsiders, members): (Vec<&String>, Vec<&String>) = not_mod.into_iter().partition(|a| !c.members.iter().any(|m| &m.agent == *a));
+    let mut order = rotate(outsiders, seed);
+    order.extend(rotate(members, seed / 7));
+    let mut out: Vec<&'static Agent> = order.into_iter().filter_map(|a| agents::get(a)).collect();
+    if out.is_empty() {
+        out.extend(agents::get(&c.moderator));
+    }
+    out
 }
 
 /// Saca el JSON de una respuesta aunque venga entre ``` o con texto alrededor.
@@ -537,10 +644,94 @@ async fn converge(app: &AppHandle, runs: &Runs, shared: Arc<Mutex<Council>>) -> 
     Ok(())
 }
 
+fn random_seed() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+}
+
+/// El evaluador juzga la síntesis. Devuelve true si pide otra ronda (y aún quedan).
+async fn judge(app: &AppHandle, runs: &Runs, shared: Arc<Mutex<Council>>) -> Result<bool, String> {
+    set_phase(app, &shared, "judge").await;
+    let (candidates, cwd, id) = {
+        let c = shared.lock().await;
+        (judge_candidates(&c, random_seed()), PathBuf::from(&c.project), c.id.clone())
+    };
+    let mut failures: Vec<String> = vec![];
+    let mut answer = None;
+    for agent in candidates {
+        let prompt = {
+            let mut c = shared.lock().await;
+            let round = c.round;
+            // Se anota ya quién evalúa, para que el tablero lo muestre mientras trabaja.
+            if c.verdicts.last().is_some_and(|v| v.decision == "evaluando") {
+                c.verdicts.pop();
+            }
+            c.verdicts.push(Verdict { round, agent: agent.id.into(), agent_name: agent.name.into(), decision: "evaluando".into(), confidence: None, reasons: vec![], questions: vec![], capped: false });
+            let _ = save(&mut c);
+            emit(app, &c);
+            judge_prompt(&c, agent)
+        };
+        let cancel = runs.cancel_rx(&id).ok_or("Detenido.")?;
+        let on_step = |step: &Step| {
+            let _ = app.emit("council-activity", ActivityEvent { council_id: &id, agent: "judge", activity: activity(step) });
+        };
+        match agents::run_readonly(agent, &prompt, &cwd, on_step, cancel).await {
+            Ok(r) => {
+                answer = Some((agent, r.text));
+                break;
+            }
+            Err(e) if !runs.is_running(&id) => return Err(e),
+            Err(e) => {
+                let low = e.to_lowercase();
+                let why = if low.contains("resource_exhausted") || low.contains("quota") || low.contains("rate limit") || low.contains("429") {
+                    "sin cupo".to_string()
+                } else if low.contains("login") || low.contains("auth") || low.contains("ineligible") {
+                    "sin sesión válida".to_string()
+                } else if low.contains("no está instalado") {
+                    "no instalado".to_string()
+                } else {
+                    "falló".to_string()
+                };
+                failures.push(format!("{}: {why}", agent.name));
+            }
+        }
+    }
+    let mut c = shared.lock().await;
+    let Some((agent, text)) = answer else {
+        c.verdicts.pop();
+        return Err(format!("Ninguna CLI pudo hacer de evaluador. {}", failures.join(" · ")));
+    };
+    let (decision, confidence, mut reasons, questions) = parse_verdict(&text);
+    if !failures.is_empty() {
+        reasons.push(format!("(Antes se intentó con otras CLIs: {})", failures.join(" · ")));
+    }
+    let wants_round = decision == "otra_ronda";
+    let can_round = c.judge.used_rounds < c.judge.max_rounds;
+    let round = c.round;
+    if let Some(v) = c.verdicts.last_mut() {
+        *v = Verdict { round, agent: agent.id.into(), agent_name: agent.name.into(), decision, confidence, reasons, questions: questions.clone(), capped: wants_round && !can_round };
+    }
+    let again = wants_round && can_round;
+    if again {
+        c.judge.used_rounds += 1;
+        // Sus objeciones van al tablero para que el consejo las responda en la siguiente ronda.
+        let name = format!("Evaluador · {}", agent.name);
+        let parsed = questions.into_iter().map(|q| ("pregunta".to_string(), None, q)).collect();
+        add_cards(&mut c, "judge", &name, parsed);
+    } else {
+        c.phase = "review".into();
+    }
+    let _ = save(&mut c);
+    emit(app, &c);
+    Ok(again)
+}
+
 async fn fail(app: &AppHandle, shared: &Mutex<Council>, cancelled: bool, msg: String) {
     let mut c = shared.lock().await;
     c.phase = if cancelled { "cancelled".into() } else { "error".into() };
     c.error = Some(msg);
+    if c.verdicts.last().is_some_and(|v| v.decision == "evaluando") {
+        c.verdicts.pop();
+    }
     for m in &mut c.members {
         if m.status == "running" {
             m.status = "pending".into();
@@ -585,7 +776,28 @@ pub fn launch(app: AppHandle, runs: Arc<Runs>, council: Council, plan: Plan) -> 
             if !runs.is_running(&id) {
                 return Err("Detenido.".into());
             }
-            converge(&app, &runs, shared.clone()).await
+            converge(&app, &runs, shared.clone()).await?;
+            // Evaluador: si no le convence, otra ronda de contraste y nueva síntesis, hasta su tope.
+            loop {
+                let enabled = shared.lock().await.judge.enabled;
+                if !enabled || !runs.is_running(&id) {
+                    break;
+                }
+                if !judge(&app, &runs, shared.clone()).await? {
+                    break;
+                }
+                {
+                    let mut c = shared.lock().await;
+                    c.round += 1;
+                }
+                set_phase(&app, &shared, "contrast").await;
+                member_phase(&app, &runs, shared.clone(), true).await;
+                if !runs.is_running(&id) {
+                    return Err("Detenido.".into());
+                }
+                converge(&app, &runs, shared.clone()).await?;
+            }
+            Ok(())
         }
         .await;
         let cancelled = !runs.is_running(&id);
@@ -625,6 +837,33 @@ mod tests {
     }
 
     #[test]
+    fn veredicto_del_evaluador() {
+        let (d, conf, motivos, preg) = parse_verdict("```json\n{\"veredicto\":\"otra_ronda\",\"confianza\":40,\"motivos\":[\"Falta X\"],\"preguntas\":[\"¿Y si Y?\"]}\n```");
+        assert_eq!((d.as_str(), conf, motivos, preg), ("otra_ronda", Some(40), vec!["Falta X".to_string()], vec!["¿Y si Y?".to_string()]));
+        assert_eq!(parse_verdict("{\"veredicto\":\"Aprobar\"}").0, "aprobar");
+        assert_eq!(parse_verdict("no sé").0, "sin_veredicto");
+    }
+
+    #[test]
+    fn evaluador_al_azar_y_nunca_el_moderador() {
+        let member = |a: &str| Member { agent: a.into(), agent_name: a.into(), role: "libre".into(), role_name: "Libre".into(), status: String::new(), activity: String::new() };
+        let mut c = Council {
+            id: "x".into(), project: String::new(), conversation_id: None, topic: String::new(), output: "adr".into(), context: String::new(),
+            members: vec![member("copilot"), member("opencode")], moderator: "codex".into(), phase: "review".into(), round: 1, cards: vec![],
+            synthesis: None, document_path: None, error: None,
+            judge: Judge { enabled: true, pool: vec!["claude".into(), "codex".into(), "copilot".into(), "opencode".into(), "agy".into()], max_rounds: 2, used_rounds: 0 },
+            verdicts: vec![], created_at: String::new(), updated_at: String::new(),
+        };
+        let firsts: std::collections::HashSet<&str> = (0..20u64).map(|i| judge_candidates(&c, i)[0].id).collect();
+        assert_eq!(firsts, ["claude", "agy"].into_iter().collect(), "primero quien no participó ni modera, y varía");
+        let all: Vec<&str> = judge_candidates(&c, 3).iter().map(|a| a.id).collect();
+        assert_eq!(all.len(), 4, "todos menos el moderador, como reserva");
+        assert!(!all.contains(&"codex"));
+        c.judge.pool = vec!["codex".into(), "copilot".into()];
+        assert_eq!(judge_candidates(&c, 0)[0].id, "copilot", "si solo quedan participantes, uno de ellos, nunca el moderador");
+    }
+
+    #[test]
     fn documento_numerado_en_docs_adr() {
         let root = std::env::temp_dir().join(format!("consejo-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -645,6 +884,8 @@ mod tests {
             synthesis: None,
             document_path: None,
             error: None,
+            judge: Judge::default(),
+            verdicts: vec![],
             created_at: String::new(),
             updated_at: String::new(),
         };
@@ -671,6 +912,7 @@ async fn consejo_real() {
         String::new(),
         vec![NewMember { agent: "copilot".into(), role: "arquitecto".into() }, NewMember { agent: "opencode".into(), role: "abogado".into() }],
         "codex".into(),
+        Judge::default(),
     )
     .unwrap();
     let never = || tokio::sync::oneshot::channel::<()>().1;

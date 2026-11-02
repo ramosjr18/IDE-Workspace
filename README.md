@@ -82,7 +82,19 @@ Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
 1. **Divergir**: cada agente da su propuesta sin ver la de los demás.
 2. **Contrastar**: cada uno lee al resto y responde con apoyos, objeciones o preguntas, citando la tarjeta (C1, C2…).
 3. **Converger**: el moderador resume acuerdos y puntos abiertos y redacta el documento.
-4. **Revisión**: editas el documento si quieres y eliges **Aprobar y guardar**, **Otra ronda** o **Rehacer síntesis**. También puedes añadir tus comentarios, que cuentan en la siguiente ronda.
+4. **Evaluar** (si está activado): ver «Evaluador independiente».
+5. **Revisión**: editas el documento si quieres y eliges **Aprobar y guardar**, **Otra ronda** o **Rehacer síntesis**. También puedes añadir tus comentarios, que cuentan en la siguiente ronda.
+
+### Evaluador independiente
+
+Es el primer agente propio del IDE. Después de cada síntesis, un evaluador revisa con ojos nuevos si lo convergido es correcto: si responde al tema, recoge las objeciones importantes, no contradice el código y se puede aplicar.
+
+- Corre sobre una **CLI elegida al azar** entre las disponibles. Nunca es el moderador y, si se puede, tampoco un participante. Si la CLI elegida falla (sin cupo, sin sesión…), prueba con la siguiente.
+- Si le convence, **recomienda aprobar** y pasas a revisar.
+- Si no, deja sus **objeciones como tarjetas** (columna «Evaluador») y **manda al consejo a otra ronda**: los participantes las responden, el moderador rehace la síntesis y vuelve a evaluar.
+- Puede pedir como máximo las **rondas extra** que elijas al convocar (de 0 a 3; por defecto, 2). Si se agotan y sigue sin convencerle, te avisa y decides tú.
+
+Se activa o desactiva en el diálogo de convocar, que también calcula cuántas llamadas puede suponer.
 
 Al aprobar, el documento se guarda numerado en el repo (por ejemplo `docs/adr/0004-politica-de-versionado.md`) y en el chat aparece un resumen con los acuerdos y los puntos abiertos.
 

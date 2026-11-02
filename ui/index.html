@@ -89,6 +89,15 @@
   .member-row label { display: flex; gap: 8px; align-items: center; min-width: 170px; }
   .member-row select { flex: 1; }
   .member-row.unavailable { opacity: .5; }
+  .judge-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; font-weight: 400; }
+  .judge-row label { display: flex; gap: 8px; align-items: center; }
+  .judge-row select { width: auto; }
+  .verdict { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; background: var(--bg); }
+  .verdict .v-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .verdict .badge { font: 600 11px/1 ui-monospace, Menlo, monospace; padding: 4px 8px; border-radius: 999px; border: 1px solid currentColor; }
+  .verdict .badge.ok { color: var(--ok); } .verdict .badge.warn { color: var(--warn); } .verdict .badge.bad { color: var(--error); }
+  .verdict ul { margin: 0; padding-left: 18px; }
+  .verdict .muted { font-size: 12px; }
   .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
   #councilBody { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
   #councilSelect { flex: 1; min-width: 0; }
@@ -345,6 +354,13 @@
       <label class="field">Moderador <span class="muted">(resume y redacta; mejor uno que no participe)</span>
         <select id="cModerator"></select>
       </label>
+      <div class="field">Evaluador independiente
+        <div class="judge-row">
+          <label><input type="checkbox" id="cJudge" checked> Revisar cada síntesis con una CLI elegida al azar</label>
+          <label>Rondas extra que puede pedir <select id="cJudgeRounds"><option value="0">0</option><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select></label>
+        </div>
+        <span class="muted" style="font-weight:400">Nunca es el moderador y, si se puede, tampoco un participante. Si la síntesis no le convence, deja sus objeciones en el tablero y manda al consejo a otra ronda.</span>
+      </div>
       <label class="field">Contexto <span class="muted">(la conversación actual; edítalo si quieres)</span>
         <textarea id="cContext" rows="7"></textarea>
       </label>
@@ -1220,7 +1236,7 @@
   const councilActivity = {}; // agente → lo que está haciendo ahora
   let councilReplyTo = null;
   const COLORS = ['#c8643b', '#3d6fc4', '#8a57c2', '#2f9a8a', '#b08a1e', '#c24f7f'];
-  const RUNNING = ['diverge', 'contrast', 'converge'];
+  const RUNNING = ['diverge', 'contrast', 'converge', 'judge'];
   const KIND = { propuesta: 'Propuesta', riesgo: 'Riesgo', apoyo: 'Apoyo', objecion: 'Objeción', pregunta: 'Pregunta', comentario: 'Comentario' };
   const el = (tag, props = {}, ...children) => { const n = Object.assign(document.createElement(tag), props); n.append(...children.filter((c) => c != null)); return n; };
 
@@ -1282,6 +1298,8 @@
     const chosen = [...rows.querySelectorAll('input:checked')].map((c) => c.value);
     const free = agents.find((a) => a.status === 'ready' && !chosen.includes(a.id));
     if (free) mod.value = free.id;
+    $('cJudge').onchange = updateEstimate;
+    $('cJudgeRounds').onchange = updateEstimate;
     updateEstimate();
     closeMenu();
     $('councilDialog').showModal();
@@ -1296,9 +1314,13 @@
 
   function updateEstimate() {
     const n = selectedMembers().length;
-    $('cEstimate').textContent = n
-      ? `Se harán ${n * 2 + 1} llamadas: ${n} para opinar, ${n} para contrastar y 1 de síntesis. Los agentes trabajan en modo solo lectura.`
-      : 'Elige al menos dos participantes.';
+    const judge = $('cJudge').checked;
+    const extra = Number($('cJudgeRounds').value);
+    const base = n * 2 + 1 + (judge ? 1 : 0);
+    const max = base + (judge ? extra * (n + 2) : 0);
+    $('cEstimate').textContent = !n
+      ? 'Elige al menos dos participantes.'
+      : `Se harán ${base} llamadas (${n} para opinar, ${n} para contrastar, 1 de síntesis${judge ? ' y 1 del evaluador' : ''})${judge && extra ? `, y hasta ${max} si el evaluador pide ${extra === 1 ? 'una ronda más' : `${extra} rondas más`}` : ''}. Todos trabajan en modo solo lectura.`;
   }
 
   $('councilForm').addEventListener('submit', async (e) => {
@@ -1308,6 +1330,9 @@
       const c = await invoke('council_start', {
         conversationId, topic: $('cTopic').value, output: $('cOutput').value, context: $('cContext').value,
         members: selectedMembers(), moderator: $('cModerator').value,
+        judgeEnabled: $('cJudge').checked,
+        judgePool: agents.filter((a) => a.status === 'ready').map((a) => a.id),
+        judgeMaxRounds: Number($('cJudgeRounds').value),
       });
       $('councilDialog').close();
       council = c;
@@ -1327,6 +1352,7 @@
   // ----- Tablero -----
   const memberColor = (agentId) => {
     if (agentId === 'user') return 'var(--me)';
+    if (agentId === 'judge') return 'var(--warn)';
     const i = council.members.findIndex((m) => m.agent === agentId);
     return COLORS[(i < 0 ? 0 : i) % COLORS.length];
   };
@@ -1394,6 +1420,7 @@
     // Cabecera: tema, fases y acciones
     const phases = [
       ['diverge', 'Divergir'], ['contrast', `Contrastar${c.round ? ` · ronda ${c.round}` : ''}`], ['converge', 'Converger'],
+      ...(c.judge?.enabled ? [['judge', `Evaluar${c.judge.usedRounds ? ` · ${c.judge.usedRounds}/${c.judge.maxRounds} rondas extra` : ''}`]] : []),
       ['review', 'Revisión'], ['approved', 'Aprobado'],
     ];
     const order = phases.map((p) => p[0]);
@@ -1426,6 +1453,13 @@
       col.appendChild(el('div', { className: 'c-col-head' },
         el('div', { className: 'name' }, el('span', { textContent: m.agentName })), el('div', { className: 'role', textContent: m.roleName }), act));
       topLevel(m.agent).forEach((k) => col.appendChild(cardEl(k, byTarget)));
+      board.appendChild(col);
+    }
+    if (topLevel('judge').length) {
+      const col = el('div', { className: 'c-col' });
+      col.style.setProperty('--c', 'var(--warn)');
+      col.appendChild(el('div', { className: 'c-col-head' }, el('div', { className: 'name', textContent: 'Evaluador' }), el('div', { className: 'role', textContent: 'Objeciones para el consejo' })));
+      topLevel('judge').forEach((k) => col.appendChild(cardEl(k, byTarget)));
       board.appendChild(col);
     }
     if (topLevel('user').length) {
@@ -1468,6 +1502,8 @@
     if (c.phase === 'converge') act.append(el('i', { className: 'codicon codicon-loading codicon-modifier-spin' }), ` ${councilActivity.moderator || 'Redactando…'}`);
     col.appendChild(el('div', { className: 'c-col-head' },
       el('div', { className: 'name', textContent: 'Síntesis' }), el('div', { className: 'role', textContent: `Moderador: ${mod ? mod.name : c.moderator}` }), act));
+    const v = c.verdicts?.at(-1);
+    if (v) col.appendChild(verdictEl(c, v));
     const s = c.synthesis;
     if (!s) {
       if (c.phase !== 'converge') col.appendChild(el('p', { className: 'muted', textContent: 'Aparecerá cuando el consejo termine de contrastar.' }));
@@ -1509,6 +1545,32 @@
     return col;
   }
 
+  // Veredicto del evaluador (el último), con su CLI elegida al azar
+  function verdictEl(c, v) {
+    const box = el('div', { className: 'verdict' });
+    const [label, cls] = v.decision === 'evaluando' ? ['Evaluando…', 'warn']
+      : v.decision === 'aprobar' ? ['Recomienda aprobar', 'ok']
+      : v.decision === 'otra_ronda' && v.capped ? ['Sigue sin convencerle (sin rondas extra)', 'bad']
+      : v.decision === 'otra_ronda' ? ['Pide otra ronda', 'warn']
+      : ['Sin veredicto claro', 'warn'];
+    const head = el('div', { className: 'v-head' },
+      el('strong', { textContent: 'Evaluador' }), el('span', { className: 'muted', textContent: `${v.agentName} · elegido al azar` }),
+      el('span', { className: `badge ${cls}`, textContent: label }),
+      v.confidence != null ? el('span', { className: 'muted', textContent: `confianza ${v.confidence}%` }) : null);
+    box.appendChild(head);
+    if (v.decision === 'evaluando') {
+      box.appendChild(el('div', { className: 'muted', id: 'judgeActivity', textContent: councilActivity.judge || 'Leyendo la síntesis…' }));
+    }
+    if (v.reasons?.length) box.appendChild(el('ul', {}, ...v.reasons.map((r) => el('li', { textContent: r }))));
+    if (v.decision === 'otra_ronda' && !v.capped && v.questions?.length) {
+      box.appendChild(el('div', { className: 'muted', textContent: 'Sus preguntas están en la columna «Evaluador» y el consejo las responde en la siguiente ronda.' }));
+    }
+    if (v.capped) box.appendChild(el('div', { className: 'muted', textContent: 'Decides tú: aprueba igualmente, edita el documento o pide otra ronda.' }));
+    const n = (c.verdicts || []).filter((x) => x.decision !== 'evaluando').length;
+    if (n > 1) box.appendChild(el('div', { className: 'muted', textContent: `${n} evaluaciones en este consejo.` }));
+    return box;
+  }
+
   // Cambios que llegan de Rust mientras el consejo trabaja
   listen('council-update', (e) => {
     const c = e.payload;
@@ -1531,6 +1593,11 @@
     councilActivity[agent] = activity;
     const i = council.members.findIndex((m) => m.agent === agent);
     const heads = document.querySelectorAll('.c-col-head .act');
+    if (agent === 'judge') {
+      const j = document.getElementById('judgeActivity');
+      if (j) j.textContent = activity;
+      return;
+    }
     const target = agent === 'moderator' ? document.querySelector('.c-synth .act') : heads[i];
     if (target && (agent === 'moderator' ? council.phase === 'converge' : council.members[i]?.status === 'running')) {
       target.innerHTML = '<i class="codicon codicon-loading codicon-modifier-spin"></i>';
