@@ -677,7 +677,7 @@
   function renderContext() {
     const a = agents.find((x) => x.id === $('agent').value);
     $('context').innerHTML = '';
-    $('context').append(project ? project.name : '…');
+    $('context').append(project ? project.name : 'Chat de agentes');
     if (a) $('context').append(Object.assign(document.createElement('span'), { className: 'muted', textContent: ` · ${a.name}` }));
   }
 
@@ -2209,7 +2209,7 @@
     if (u.plan) head.appendChild(el('span', { className: 'plan', textContent: u.plan }));
     if (u.today?.tokens) head.appendChild(el('span', { className: 'today', textContent: `hoy ${fmtTokens(u.today.tokens)}`, title: [u.today.prompts != null && `${u.today.prompts} prompts`, u.today.sessions != null && `${u.today.sessions} sesiones`].filter(Boolean).join(' · ') }));
     card.appendChild(head);
-    if (u.status !== 'ok' && (u.statusText || u.help)) {
+    if (u.status !== 'ok' && u.status !== 'no_data' && (u.statusText || u.help)) {
       const st = el('div', { className: 'u-status' });
       if (u.statusText) st.append(u.statusText);
       if (u.help) {
