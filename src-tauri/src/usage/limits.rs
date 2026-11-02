@@ -79,7 +79,7 @@ impl Default for LimitsState {
 }
 impl LimitsState {
     pub(super) async fn collect(&self, r: &mut UsageRecord) {
-        if !["codex", "claude"].contains(&r.id.as_str()) {
+        if !["codex", "claude", "opencode"].contains(&r.id.as_str()) {
             return;
         }
         let id = r.id.clone();
@@ -87,6 +87,9 @@ impl LimitsState {
             match id.as_str() {
                 "codex" => codex().await,
                 "claude" => claude(self, &HttpTransport)
+                    .await
+                    .unwrap_or_else(Probe::failed),
+                "opencode" => opencode(self, &HttpTransport)
                     .await
                     .unwrap_or_else(Probe::failed),
                 _ => Probe::default(),
@@ -690,5 +693,243 @@ mod network_tests {
             .collect_with(&mut r, async { panic!("second attempt within 5 minutes") })
             .await;
         assert_eq!(r.limits[0].percent, 0.01);
+    }
+}
+struct OpenCodeAccount {
+    token: Secret,
+    base: String,
+    org: String,
+    expires: i64,
+    active: bool,
+}
+#[derive(serde::Deserialize)]
+struct OpenCodeCredential {
+    #[serde(rename = "type")]
+    kind: String,
+    access: Option<Secret>,
+    expires: Option<i64>,
+    metadata: Option<OpenCodeMetadata>,
+}
+#[derive(serde::Deserialize, Default)]
+struct OpenCodeMetadata {
+    server: Option<String>,
+    #[serde(rename = "orgID")]
+    org_id: Option<String>,
+}
+fn valid_opencode_base(base: &str) -> bool {
+    reqwest::Url::parse(base).ok().is_some_and(|u| {
+        u.scheme() == "https"
+            && u.host_str() == Some("opencode.ai")
+            && u.port_or_known_default() == Some(443)
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.path() == "/"
+            && u.query().is_none()
+            && u.fragment().is_none()
+    })
+}
+fn opencode_account_from_db(path: &std::path::Path) -> Option<OpenCodeAccount> {
+    let conn = super::local::open_db(path).ok()?;
+    let (active_id, org) = conn
+        .query_row(
+            "SELECT active_account_id, active_org_id FROM account_state LIMIT 1",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                ))
+            },
+        )
+        .unwrap_or_default();
+    let mut accounts = vec![];
+    if let Ok(mut stmt) = conn.prepare("SELECT id, url, access_token, token_expiry FROM account") {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok(OpenCodeAccount {
+                active: r.get::<_, String>(0)? == active_id,
+                base: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                token: Secret(r.get::<_, Option<String>>(2)?.unwrap_or_default()),
+                expires: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                org: org.clone(),
+            })
+        }) {
+            accounts.extend(rows.flatten().filter(|a| !a.token.0.is_empty()));
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare("SELECT value, active FROM credential") {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))
+        {
+            for (raw, active) in rows.flatten() {
+                let Ok(credential) = serde_json::from_str::<OpenCodeCredential>(&raw) else {
+                    continue;
+                };
+                if credential.kind != "oauth" {
+                    continue;
+                }
+                let Some(token) = credential.access.filter(|t| !t.0.is_empty()) else {
+                    continue;
+                };
+                let meta = credential.metadata.unwrap_or_default();
+                accounts.push(OpenCodeAccount {
+                    token,
+                    base: meta.server.unwrap_or_default(),
+                    org: meta.org_id.unwrap_or_else(|| org.clone()),
+                    expires: credential.expires.unwrap_or(0),
+                    active,
+                });
+            }
+        }
+    }
+    accounts.sort_by(|a, b| b.active.cmp(&a.active).then(b.expires.cmp(&a.expires)));
+    accounts.into_iter().next()
+}
+#[derive(serde::Deserialize)]
+struct GoAuth {
+    key: Option<Secret>,
+    access: Option<Secret>,
+}
+#[derive(serde::Deserialize)]
+struct OpenCodeAuth {
+    #[serde(rename = "opencode-go")]
+    go: Option<GoAuth>,
+}
+fn opencode_account() -> Option<OpenCodeAccount> {
+    if let Some(account) = opencode_account_from_db(&super::local::opencode_db()) {
+        return Some(account);
+    }
+    let api_key = std::env::var("OPENCODE_APIKEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(Secret);
+    let token = api_key.or_else(|| {
+        let path = super::local::opencode_db().parent()?.join("auth.json");
+        let raw = std::fs::read(path).ok()?;
+        let auth: OpenCodeAuth = serde_json::from_slice(&raw).ok()?;
+        let go = auth.go?;
+        go.key.or(go.access)
+    })?;
+    Some(OpenCodeAccount {
+        token,
+        base: "https://opencode.ai".into(),
+        org: String::new(),
+        expires: 0,
+        active: true,
+    })
+}
+fn opencode_limits(v: &Value) -> Result<Probe, Failure> {
+    if v.is_null() {
+        return Ok(Probe::default());
+    }
+    if !v.is_object() {
+        return Err(Failure::InvalidResponse);
+    }
+    let mut probe = Probe {
+        plan: plan(&v["product"]),
+        ..Probe::default()
+    };
+    for (key, label) in [
+        ("fiveHour", "Sesión (5 h)"),
+        ("week", "Semanal"),
+        ("month", "Mensual"),
+    ] {
+        let m = &v["access"]["meters"][key];
+        let number = |v: &Value| {
+            v.as_f64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                .filter(|n| n.is_finite())
+        };
+        let Some(limit) = number(&m["limitMicroCents"]).filter(|n| *n > 0.0) else {
+            continue;
+        };
+        let Some(used) = number(&m["usedMicroCents"]) else {
+            continue;
+        };
+        probe.limits.push(UsageLimit {
+            label: label.into(),
+            percent: (used / limit).clamp(0.0, 1.0),
+            resets_at: reset(&m["resetsAt"]),
+        });
+    }
+    Ok(probe)
+}
+async fn opencode(state: &LimitsState, transport: &dyn Transport) -> Result<Probe, Failure> {
+    let account = tauri::async_runtime::spawn_blocking(opencode_account)
+        .await
+        .map_err(|_| Failure::Unavailable)?
+        .ok_or(Failure::NoSession)?;
+    if !valid_opencode_base(&account.base) {
+        return Err(Failure::Unavailable);
+    }
+    if account.expires > 0 && account.expires <= Utc::now().timestamp_millis() {
+        return Err(Failure::Expired);
+    }
+    let headers = if account.org.is_empty() {
+        vec![]
+    } else {
+        vec![("x-org-id", account.org)]
+    };
+    let v = state
+        .request(
+            "opencode",
+            transport,
+            Endpoint::OpenCode,
+            &account.token,
+            headers,
+        )
+        .await?;
+    opencode_limits(&v)
+}
+
+#[cfg(test)]
+mod opencode_tests {
+    use super::*;
+    #[test]
+    fn response_and_destinations() {
+        let v: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/usage/opencode-limits.json"
+        ))
+        .unwrap();
+        let probe = opencode_limits(&v).ok().unwrap();
+        assert_eq!(probe.plan.as_deref(), Some("go"));
+        assert_eq!(probe.limits.len(), 3);
+        assert_eq!(probe.limits[0].percent, 0.125);
+        assert_eq!(probe.limits[2].percent, 1.0);
+        assert!(opencode_limits(&Value::Null)
+            .ok()
+            .unwrap()
+            .limits
+            .is_empty());
+        assert!(valid_opencode_base("https://opencode.ai"));
+        for base in [
+            "http://opencode.ai",
+            "https://opencode.ai.evil.test",
+            "https://opencode.ai@evil.test",
+            "https://opencode.ai:444",
+            "https://opencode.ai/path",
+            "https://evil.test",
+            "https://opencode.ai?redirect=evil",
+        ] {
+            assert!(!valid_opencode_base(base));
+        }
+    }
+    #[test]
+    fn account_selection_is_read_only() {
+        let path = std::env::temp_dir().join(format!("usage-account-{}.db", uuid::Uuid::new_v4()));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE account_state(active_account_id TEXT, active_org_id TEXT); INSERT INTO account_state VALUES ('active','org'); CREATE TABLE account(id TEXT, url TEXT, access_token TEXT, token_expiry INTEGER); INSERT INTO account VALUES ('other','https://evil.test','inactive',9000000000000), ('active','https://opencode.ai','active-token',8000000000000);").unwrap();
+        let a = opencode_account_from_db(&path).unwrap();
+        assert_eq!(a.token.0, "active-token");
+        assert_eq!(a.org, "org");
+        assert!(valid_opencode_base(&a.base));
+        conn.execute_batch(
+            "DROP TABLE account; CREATE TABLE credential(value TEXT, active INTEGER);",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO credential VALUES (?1,1)", [r#"{"type":"oauth","access":"legacy-token","expires":8000000000000,"metadata":{"server":"https://opencode.ai","orgID":"legacy-org"}}"#]).unwrap();
+        let a = opencode_account_from_db(&path).unwrap();
+        assert_eq!(a.token.0, "legacy-token");
+        assert_eq!(a.org, "legacy-org");
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
     }
 }

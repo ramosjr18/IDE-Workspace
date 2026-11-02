@@ -1,0 +1,1 @@
+{"product":"go","access":{"meters":{"fiveHour":{"limitMicroCents":"1000000","usedMicroCents":"125000","resetsAt":"2030-03-17T20:00:00Z"},"week":{"limitMicroCents":"2000000","usedMicroCents":"750000"},"month":{"limitMicroCents":"3000000","usedMicroCents":"3500000"}}}}
