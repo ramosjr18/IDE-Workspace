@@ -73,6 +73,58 @@
   #resizer:hover, #resizer.dragging { background: var(--me); }
   #panel { width: var(--panel-w, 42%); min-width: 260px; max-width: 75%; display: flex; flex-direction: column; background: var(--panel); flex: none; }
   body.no-panel #panel, body.no-panel #resizer { display: none; }
+  body.council-wide #chat, body.council-wide #resizer { display: none; }
+  body.council-wide #panel { width: 100%; max-width: none; }
+
+  /* Consejo */
+  #councilDialog { width: min(680px, calc(100vw - 32px)); }
+  .council-form { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; max-height: 70vh; overflow: auto; }
+  .field { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 14px; }
+  .field .muted { font-weight: 400; }
+  .field input, .field select, .field textarea { font-weight: 400; width: 100%; }
+  .field input[type=checkbox] { width: auto; flex: none; }
+  .field textarea { resize: vertical; font: 13px/1.5 ui-monospace, Menlo, monospace; }
+  .member-rows { display: flex; flex-direction: column; gap: 6px; font-weight: 400; }
+  .member-row { display: flex; gap: 10px; align-items: center; }
+  .member-row label { display: flex; gap: 8px; align-items: center; min-width: 170px; }
+  .member-row select { flex: 1; }
+  .member-row.unavailable { opacity: .5; }
+  .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
+  #councilBody { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
+  #councilSelect { flex: 1; min-width: 0; }
+  .c-head { padding: 12px 14px 8px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
+  .c-topic { font-weight: 700; font-size: 15px; }
+  .c-phases { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .c-phase { font: 600 11px/1 ui-monospace, Menlo, monospace; padding: 5px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .c-phase.on { color: var(--me); border-color: var(--me); background: color-mix(in srgb, var(--me) 14%, transparent); }
+  .c-phase.ok { color: var(--ok); border-color: var(--ok); }
+  .c-phases .grow { margin-left: auto; }
+  .c-banner { margin: 10px 14px 0; padding: 8px 12px; border-radius: 8px; font-size: 13px; background: color-mix(in srgb, var(--error) 14%, transparent); }
+  .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(230px, 1fr); gap: 12px; padding: 12px 14px; overflow-x: auto; align-items: start; }
+  .c-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .c-col-head { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; border-bottom: 2px solid var(--c); }
+  .c-col-head .name { font-weight: 700; font-size: 14px; display: flex; gap: 6px; align-items: center; }
+  .c-col-head .role { font-size: 12px; color: var(--muted); }
+  .c-col-head .act { font-size: 12px; color: var(--muted); display: flex; gap: 5px; align-items: center; min-height: 18px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .c-col-head .act.err { color: var(--error); white-space: normal; }
+  .c-card { border: 1px solid var(--border); border-left: 3px solid var(--c); border-radius: 8px; padding: 8px 10px; font-size: 13px; background: var(--bg); display: flex; flex-direction: column; gap: 4px; }
+  .c-card.flash { outline: 2px solid var(--me); }
+  .c-card .meta { display: flex; gap: 6px; align-items: center; font: 600 10.5px/1 ui-monospace, Menlo, monospace; text-transform: uppercase; letter-spacing: .04em; color: var(--c); }
+  .c-card .meta .id { color: var(--muted); cursor: pointer; }
+  .c-card .meta .reply { margin-left: auto; color: var(--muted); cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .c-card .meta .reply:hover, .c-card .meta .id:hover { color: var(--me); }
+  .c-card .txt { white-space: pre-wrap; word-wrap: break-word; }
+  .c-replies { display: flex; flex-direction: column; gap: 6px; margin-left: 12px; }
+  .c-synth { --c: var(--ok); }
+  .c-synth h4 { margin: 6px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .c-synth ul { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
+  .c-doc { width: 100%; min-height: 260px; resize: vertical; font: 12.5px/1.5 ui-monospace, Menlo, monospace; }
+  .c-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .c-comment { border-top: 1px solid var(--border); padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .c-comment .row { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+  .c-comment textarea { width: 100%; resize: vertical; min-height: 44px; }
+  .c-empty { padding: 20px 16px; display: flex; flex-direction: column; gap: 10px; color: var(--muted); }
+  .c-empty strong { color: var(--text); }
   .tabs { display: flex; border-bottom: 1px solid var(--border); flex: none; }
   .tab { border: 0; border-radius: 0; background: transparent; padding: 10px 14px; color: var(--muted); border-bottom: 2px solid transparent; }
   .tab.active { color: var(--text); border-bottom-color: var(--me); }
@@ -198,6 +250,7 @@
   <section class="grow">
     <h3>Conversaciones</h3>
     <button id="reset" type="button" class="item"><i class="codicon codicon-add"></i> Nueva conversación</button>
+    <button id="menuCouncil" type="button" class="item"><i class="codicon codicon-organization"></i> Convocar consejo</button>
     <div id="convs" class="conv-list"></div>
   </section>
   <section>
@@ -218,6 +271,7 @@
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tabTree" class="tab active">Worktree <span id="treeCount" class="count"></span></button>
       <button type="button" role="tab" id="tabFile" class="tab">Archivo <span id="fileTabName" class="count"></span></button>
+      <button type="button" role="tab" id="tabCouncil" class="tab">Consejo <span id="councilTabState" class="count"></span></button>
     </div>
     <div id="treeView" class="view">
       <div class="toolbar explorer-head">
@@ -248,6 +302,16 @@
         <p id="fileNotice" class="muted pad">Aquí verás el archivo que se está editando. También puedes abrir uno desde Worktree.</p>
       </div>
     </div>
+    <div id="councilView" class="view" hidden>
+      <div class="toolbar">
+        <select id="councilSelect" aria-label="Consejos de este proyecto"></select>
+        <span class="actions">
+          <button type="button" class="icon" id="newCouncil" title="Nuevo consejo"><i class="codicon codicon-add"></i></button>
+          <button type="button" class="icon" id="widenCouncil" title="Ampliar el tablero (oculta el chat)" aria-pressed="false"><i class="codicon codicon-screen-full"></i></button>
+        </span>
+      </div>
+      <div id="councilBody"></div>
+    </div>
   </aside>
 </main>
 
@@ -259,6 +323,36 @@
     <button id="installCli" type="button">Instalar comando «agentes»</button>
     <p id="cliResult">Para abrir la app desde la terminal dentro de un repo, como <code>claude</code> o <code>code .</code></p>
   </div>
+</dialog>
+
+<dialog id="councilDialog">
+  <form id="councilForm" method="dialog">
+    <div class="dlg-head"><h2>Nuevo consejo</h2><button type="button" data-close>Cancelar</button></div>
+    <div class="council-form">
+      <label class="field">Tema
+        <input id="cTopic" placeholder="Ej.: Política de versionado de la API" autocomplete="off">
+      </label>
+      <label class="field">Resultado
+        <select id="cOutput">
+          <option value="adr">ADR (decisión de arquitectura) · docs/adr/</option>
+          <option value="politica">Política · docs/politicas/</option>
+          <option value="nota">Nota de decisión · docs/decisiones/</option>
+        </select>
+      </label>
+      <div class="field">Participantes <span class="muted">(al menos dos; cada uno con un rol)</span>
+        <div id="cMembers" class="member-rows"></div>
+      </div>
+      <label class="field">Moderador <span class="muted">(resume y redacta; mejor uno que no participe)</span>
+        <select id="cModerator"></select>
+      </label>
+      <label class="field">Contexto <span class="muted">(la conversación actual; edítalo si quieres)</span>
+        <textarea id="cContext" rows="7"></textarea>
+      </label>
+      <p class="muted" id="cEstimate"></p>
+      <p class="step-error" id="cError" hidden></p>
+    </div>
+    <div class="dlg-foot"><button type="submit" class="primary" id="cLaunch">Convocar consejo</button></div>
+  </form>
 </dialog>
 
 <dialog id="termDialog">
@@ -364,6 +458,7 @@
     }
   }
 
+  $('menuCouncil').addEventListener('click', () => openCouncilDialog(''));
   $('reset').addEventListener('click', () => {
     loadConversation(null);
     loadConversationList();
@@ -437,6 +532,13 @@
     }
     const message = $('input').value.trim();
     if (!message) return;
+    // /consejo «tema» abre el diálogo para convocar un consejo de agentes
+    const slash = message.match(/^\/consejo\b\s*([\s\S]*)$/i);
+    if (slash) {
+      $('input').value = '';
+      remember(message);
+      return openCouncilDialog(slash[1].trim());
+    }
     const agent = agents.find((a) => a.id === $('agent').value);
     if (!agent) return;
     if (agent.status === 'missing') return openAgentTerminal(agent, 'install');
@@ -701,6 +803,11 @@
       files.clear();
     }
     loadTree();
+    council = null;
+    const savedCouncil = store.get(`council:${p.path}`);
+    if (savedCouncil) invoke('council_get', { id: savedCouncil }).then((c) => { council = c; renderCouncil(); }).catch(() => {});
+    renderCouncil();
+    loadCouncilList();
     await loadConversation(store.get(convKey()) || null);
     await loadConversationList();
   }
@@ -787,8 +894,11 @@
   function setTab(name) {
     $('tabTree').classList.toggle('active', name === 'tree');
     $('tabFile').classList.toggle('active', name === 'file');
+    $('tabCouncil').classList.toggle('active', name === 'council');
     $('treeView').hidden = name !== 'tree';
     $('fileView').hidden = name !== 'file';
+    $('councilView').hidden = name !== 'council';
+    if (name !== 'council' && document.body.classList.contains('council-wide')) toggleWide(false);
   }
   $('tabTree').addEventListener('click', () => setTab('tree'));
   $('tabFile').addEventListener('click', () => setTab('file'));
@@ -1101,6 +1211,330 @@
       openFile(changed[0], { switchTab: true, refresh: changed[0] === currentFile });
     } else if (currentFile && changed.includes(currentFile)) {
       openFile(currentFile, { refresh: true });
+    }
+  });
+
+  // ---------- Consejo de agentes ----------
+  let councilRoles = [];
+  let council = null; // consejo abierto en el tablero
+  const councilActivity = {}; // agente → lo que está haciendo ahora
+  let councilReplyTo = null;
+  const COLORS = ['#c8643b', '#3d6fc4', '#8a57c2', '#2f9a8a', '#b08a1e', '#c24f7f'];
+  const RUNNING = ['diverge', 'contrast', 'converge'];
+  const KIND = { propuesta: 'Propuesta', riesgo: 'Riesgo', apoyo: 'Apoyo', objecion: 'Objeción', pregunta: 'Pregunta', comentario: 'Comentario' };
+  const el = (tag, props = {}, ...children) => { const n = Object.assign(document.createElement(tag), props); n.append(...children.filter((c) => c != null)); return n; };
+
+  function toggleWide(force) {
+    const on = force ?? !document.body.classList.contains('council-wide');
+    document.body.classList.toggle('council-wide', on);
+    $('widenCouncil').setAttribute('aria-pressed', String(on));
+  }
+  $('widenCouncil').addEventListener('click', () => toggleWide());
+  $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); });
+  $('newCouncil').addEventListener('click', () => openCouncilDialog(''));
+  $('councilSelect').addEventListener('change', () => openCouncil($('councilSelect').value || null));
+
+  async function loadCouncilList() {
+    const list = await invoke('council_list');
+    const sel = $('councilSelect');
+    sel.innerHTML = '';
+    sel.appendChild(el('option', { value: '', textContent: list.length ? 'Consejos de este proyecto…' : 'Sin consejos todavía' }));
+    for (const c of list) sel.appendChild(el('option', { value: c.id, textContent: `${c.phase === 'approved' ? '✓ ' : ''}${c.topic}` }));
+    sel.value = council && list.some((c) => c.id === council.id) ? council.id : '';
+    if (!council) renderCouncil();
+  }
+
+  async function openCouncil(id) {
+    council = id ? await invoke('council_get', { id }) : null;
+    councilReplyTo = null;
+    store.set(`council:${project.path}`, id || '');
+    renderCouncil();
+    loadCouncilList();
+  }
+
+  // ----- Convocar -----
+  async function openCouncilDialog(topic) {
+    if (!councilRoles.length) councilRoles = await invoke('council_roles');
+    $('cTopic').value = topic;
+    $('cError').hidden = true;
+    $('cContext').value = await invoke('council_context', { conversationId });
+    const defaults = ['arquitecto', 'abogado', 'seguridad', 'coste', 'usuario', 'libre'];
+    const rows = $('cMembers');
+    rows.innerHTML = '';
+    let picked = 0;
+    agents.forEach((a, i) => {
+      const ok = a.status === 'ready';
+      const check = el('input', { type: 'checkbox', checked: ok && picked < 3, disabled: !ok, value: a.id });
+      if (check.checked) picked++;
+      const role = el('select', { disabled: !ok });
+      councilRoles.forEach((r) => role.appendChild(el('option', { value: r.id, textContent: r.name, title: r.description })));
+      role.value = defaults[i % defaults.length];
+      const row = el('div', { className: `member-row${ok ? '' : ' unavailable'}` },
+        el('label', {}, check, `${a.name}${ok ? '' : ' (no disponible)'}`), role);
+      row.dataset.agent = a.id;
+      check.addEventListener('change', updateEstimate);
+      rows.appendChild(row);
+    });
+    const mod = $('cModerator');
+    mod.innerHTML = '';
+    agents.filter((a) => a.status === 'ready').forEach((a) => mod.appendChild(el('option', { value: a.id, textContent: a.name })));
+    // Moderador por defecto: uno que no participe, si lo hay
+    const chosen = [...rows.querySelectorAll('input:checked')].map((c) => c.value);
+    const free = agents.find((a) => a.status === 'ready' && !chosen.includes(a.id));
+    if (free) mod.value = free.id;
+    updateEstimate();
+    closeMenu();
+    $('councilDialog').showModal();
+    $('cTopic').focus();
+  }
+
+  function selectedMembers() {
+    return [...$('cMembers').querySelectorAll('.member-row')]
+      .filter((r) => r.querySelector('input').checked)
+      .map((r) => ({ agent: r.dataset.agent, role: r.querySelector('select').value }));
+  }
+
+  function updateEstimate() {
+    const n = selectedMembers().length;
+    $('cEstimate').textContent = n
+      ? `Se harán ${n * 2 + 1} llamadas: ${n} para opinar, ${n} para contrastar y 1 de síntesis. Los agentes trabajan en modo solo lectura.`
+      : 'Elige al menos dos participantes.';
+  }
+
+  $('councilForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('cError').hidden = true;
+    try {
+      const c = await invoke('council_start', {
+        conversationId, topic: $('cTopic').value, output: $('cOutput').value, context: $('cContext').value,
+        members: selectedMembers(), moderator: $('cModerator').value,
+      });
+      $('councilDialog').close();
+      council = c;
+      store.set(`council:${project.path}`, c.id);
+      if (store.get('panel') === 'off') { store.set('panel', 'on'); applyPanel(); }
+      setTab('council');
+      toggleWide(true);
+      renderCouncil();
+      loadCouncilList();
+      addMessage('assistant', `Consejo convocado: «${c.topic}». Sigue el debate en la pestaña Consejo.`, 'Consejo');
+    } catch (err) {
+      $('cError').textContent = String(err);
+      $('cError').hidden = false;
+    }
+  });
+
+  // ----- Tablero -----
+  const memberColor = (agentId) => {
+    if (agentId === 'user') return 'var(--me)';
+    const i = council.members.findIndex((m) => m.agent === agentId);
+    return COLORS[(i < 0 ? 0 : i) % COLORS.length];
+  };
+
+  function cardEl(card, byTarget) {
+    const replyBtn = el('span', { className: 'reply', textContent: 'Responder' });
+    replyBtn.addEventListener('click', () => setReplyTo(card.id));
+    const idEl = el('span', { className: 'id', textContent: card.id, title: 'Ir a esta tarjeta' });
+    const node = el('div', { className: 'c-card', id: `card-${card.id}` },
+      el('div', { className: 'meta' }, el('span', { textContent: KIND[card.kind] || card.kind }), idEl,
+        card.author === 'user' ? el('span', { textContent: '· Tú' }) : null, replyBtn),
+      el('div', { className: 'txt', textContent: card.text }));
+    node.style.setProperty('--c', memberColor(card.author));
+    const replies = byTarget.get(card.id) || [];
+    if (!replies.length) return node;
+    const wrap = el('div', {}, node);
+    const box = el('div', { className: 'c-replies' });
+    replies.forEach((r) => {
+      const n = cardEl(r, byTarget);
+      const meta = n.querySelector('.meta');
+      if (r.author !== 'user') meta.insertBefore(el('span', { textContent: `· ${r.authorName}` }), meta.children[2]);
+      box.appendChild(n);
+    });
+    wrap.appendChild(box);
+    return wrap;
+  }
+
+  // Los diálogos alert() no se ven en la app: los errores se muestran en el propio tablero.
+  function councilError(err) {
+    const b = el('div', { className: 'c-banner', textContent: String(err) });
+    $('councilBody').prepend(b);
+    setTimeout(() => b.remove(), 8000);
+  }
+
+  function flashCard(id) {
+    const n = document.getElementById(`card-${id}`);
+    if (!n) return;
+    n.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    n.classList.add('flash');
+    setTimeout(() => n.classList.remove('flash'), 1400);
+  }
+
+  function setReplyTo(id) {
+    councilReplyTo = id;
+    const lbl = document.getElementById('cReplyLabel');
+    if (lbl) lbl.textContent = id ? `Respondiendo a ${id}` : 'Comentario general';
+    document.getElementById('cCommentText')?.focus();
+  }
+
+  function renderCouncil() {
+    const body = $('councilBody');
+    body.innerHTML = '';
+    const running = council && RUNNING.includes(council.phase);
+    $('councilTabState').textContent = running ? '· en curso' : '';
+    if (!council) {
+      const btn = el('button', { type: 'button', className: 'primary', textContent: 'Convocar un consejo' });
+      btn.addEventListener('click', () => openCouncilDialog(''));
+      body.appendChild(el('div', { className: 'c-empty' },
+        el('strong', { textContent: 'Varias opiniones antes de decidir' }),
+        el('span', { textContent: 'Para una política, un ADR o una decisión con peso: varios agentes opinan cada uno por su lado, se critican entre ellos y un moderador redacta la propuesta. Tú apruebas, pides otra ronda o comentas. También puedes escribir /consejo «tema» en el chat.' }),
+        btn));
+      return;
+    }
+    const c = council;
+    // Cabecera: tema, fases y acciones
+    const phases = [
+      ['diverge', 'Divergir'], ['contrast', `Contrastar${c.round ? ` · ronda ${c.round}` : ''}`], ['converge', 'Converger'],
+      ['review', 'Revisión'], ['approved', 'Aprobado'],
+    ];
+    const order = phases.map((p) => p[0]);
+    const cur = order.indexOf(c.phase);
+    const chips = el('div', { className: 'c-phases' }, ...phases.map(([id, label], i) =>
+      el('span', { className: `c-phase${id === c.phase ? ' on' : cur > i ? ' ok' : ''}`, textContent: label })));
+    if (running) {
+      const stop = el('button', { type: 'button', className: 'grow', textContent: 'Detener' });
+      stop.addEventListener('click', () => invoke('council_cancel', { id: c.id }));
+      chips.appendChild(stop);
+    }
+    body.appendChild(el('div', { className: 'c-head' }, el('div', { className: 'c-topic', textContent: c.topic }), chips));
+    if (c.phase === 'error' || c.phase === 'cancelled') {
+      body.appendChild(el('div', { className: 'c-banner', textContent: `${c.phase === 'cancelled' ? 'Detenido' : 'Error'}: ${c.error || ''}` }));
+    }
+
+    // Respuestas agrupadas por la tarjeta a la que responden
+    const byTarget = new Map();
+    c.cards.filter((k) => k.replyTo).forEach((k) => byTarget.set(k.replyTo, [...(byTarget.get(k.replyTo) || []), k]));
+    const topLevel = (author) => c.cards.filter((k) => k.author === author && !k.replyTo);
+
+    const board = el('div', { className: 'board' });
+    for (const m of c.members) {
+      const col = el('div', { className: 'c-col' });
+      col.style.setProperty('--c', memberColor(m.agent));
+      const act = el('div', { className: `act${m.status === 'error' ? ' err' : ''}` });
+      if (m.status === 'running') act.append(el('i', { className: 'codicon codicon-loading codicon-modifier-spin' }), ` ${councilActivity[m.agent] || m.activity || 'Pensando…'}`);
+      else if (m.status === 'error') act.textContent = m.activity || 'Error';
+      else if (m.status === 'done') act.append(el('i', { className: 'codicon codicon-check' }), ' Listo');
+      col.appendChild(el('div', { className: 'c-col-head' },
+        el('div', { className: 'name' }, el('span', { textContent: m.agentName })), el('div', { className: 'role', textContent: m.roleName }), act));
+      topLevel(m.agent).forEach((k) => col.appendChild(cardEl(k, byTarget)));
+      board.appendChild(col);
+    }
+    if (topLevel('user').length) {
+      const col = el('div', { className: 'c-col' });
+      col.style.setProperty('--c', 'var(--me)');
+      col.appendChild(el('div', { className: 'c-col-head' }, el('div', { className: 'name', textContent: 'Tú' }), el('div', { className: 'role', textContent: 'Comentarios' })));
+      topLevel('user').forEach((k) => col.appendChild(cardEl(k, byTarget)));
+      board.appendChild(col);
+    }
+    board.appendChild(synthesisColumn(c));
+    body.appendChild(board);
+    if (c.phase === 'review' || c.phase === 'approved') requestAnimationFrame(() => { board.scrollLeft = board.scrollWidth; });
+    body.querySelectorAll('.c-card .id').forEach((n) => n.addEventListener('click', () => flashCard(n.textContent)));
+
+    // Comentar como tú (cuenta en la siguiente ronda)
+    if (c.phase !== 'approved') {
+      const kind = el('select', { id: 'cCommentKind' });
+      ['comentario', 'pregunta', 'objecion', 'apoyo'].forEach((k) => kind.appendChild(el('option', { value: k, textContent: KIND[k] })));
+      const text = el('textarea', { id: 'cCommentText', placeholder: 'Añade tu opinión. Los agentes la tendrán en cuenta en la siguiente ronda.' });
+      const clear = el('span', { className: 'muted', textContent: '· quitar', style: 'cursor:pointer' });
+      clear.addEventListener('click', () => setReplyTo(null));
+      const send = el('button', { type: 'button', textContent: 'Añadir comentario' });
+      send.addEventListener('click', async () => {
+        try {
+          council = await invoke('council_comment', { id: c.id, text: text.value, kind: kind.value, replyTo: councilReplyTo });
+          councilReplyTo = null;
+          renderCouncil();
+        } catch (err) { councilError(err); }
+      });
+      body.appendChild(el('div', { className: 'c-comment' },
+        el('div', { className: 'row' }, kind, el('span', { id: 'cReplyLabel', textContent: councilReplyTo ? `Respondiendo a ${councilReplyTo}` : 'Comentario general' }), clear),
+        text, el('div', { className: 'c-actions' }, send)));
+    }
+  }
+
+  function synthesisColumn(c) {
+    const col = el('div', { className: 'c-col c-synth' });
+    const mod = agents.find((a) => a.id === c.moderator);
+    const act = el('div', { className: 'act' });
+    if (c.phase === 'converge') act.append(el('i', { className: 'codicon codicon-loading codicon-modifier-spin' }), ` ${councilActivity.moderator || 'Redactando…'}`);
+    col.appendChild(el('div', { className: 'c-col-head' },
+      el('div', { className: 'name', textContent: 'Síntesis' }), el('div', { className: 'role', textContent: `Moderador: ${mod ? mod.name : c.moderator}` }), act));
+    const s = c.synthesis;
+    if (!s) {
+      if (c.phase !== 'converge') col.appendChild(el('p', { className: 'muted', textContent: 'Aparecerá cuando el consejo termine de contrastar.' }));
+      return col;
+    }
+    const list = (title, items) => items.length ? [el('h4', { textContent: title }), el('ul', {}, ...items.map((t) => el('li', { textContent: t })))] : [];
+    col.append(...list('Acuerdos', s.agreements), ...list('Abierto', s.open));
+    col.appendChild(el('h4', { textContent: c.phase === 'approved' ? 'Documento aprobado' : 'Documento (puedes editarlo)' }));
+    const doc = el('textarea', { className: 'c-doc', value: s.document, readOnly: c.phase === 'approved' });
+    col.appendChild(doc);
+    const actions = el('div', { className: 'c-actions' });
+    if (c.phase === 'approved') {
+      const open = el('button', { type: 'button', className: 'primary', textContent: `Abrir ${c.documentPath}` });
+      open.addEventListener('click', () => openFile(c.documentPath, { switchTab: true }));
+      const back = el('button', { type: 'button', textContent: 'Volver al chat' });
+      back.addEventListener('click', () => { toggleWide(false); $('input').focus(); });
+      actions.append(open, back);
+    } else if (!RUNNING.includes(c.phase)) {
+      const approve = el('button', { type: 'button', className: 'primary', textContent: 'Aprobar y guardar' });
+      approve.addEventListener('click', async () => {
+        try {
+          const r = await invoke('council_approve', { id: c.id, document: doc.value });
+          council = r.council;
+          conversationId = r.conversationId;
+          store.set(convKey(), conversationId);
+          await loadConversation(conversationId);
+          loadConversationList();
+          renderCouncil();
+          loadTree();
+        } catch (err) { councilError(err); }
+      });
+      const again = el('button', { type: 'button', textContent: 'Otra ronda' });
+      again.addEventListener('click', () => invoke('council_round', { id: c.id, synthesisOnly: false }).catch(councilError));
+      const redo = el('button', { type: 'button', textContent: 'Rehacer síntesis' });
+      redo.addEventListener('click', () => invoke('council_round', { id: c.id, synthesisOnly: true }).catch(councilError));
+      actions.append(approve, again, redo);
+    }
+    col.appendChild(actions);
+    return col;
+  }
+
+  // Cambios que llegan de Rust mientras el consejo trabaja
+  listen('council-update', (e) => {
+    const c = e.payload;
+    if (c.project !== project?.path) return;
+    if (!council || council.id === c.id) {
+      // Conserva lo que estés escribiendo en el documento o el comentario
+      const draftDoc = document.querySelector('.c-doc')?.value;
+      const draftComment = document.getElementById('cCommentText')?.value;
+      const sameDoc = council?.synthesis?.document === c.synthesis?.document;
+      council = c;
+      renderCouncil();
+      if (draftComment) document.getElementById('cCommentText').value = draftComment;
+      if (draftDoc && sameDoc && c.phase !== 'approved') document.querySelector('.c-doc').value = draftDoc;
+    }
+    if (!RUNNING.includes(c.phase)) loadCouncilList();
+  });
+  listen('council-activity', (e) => {
+    const { councilId, agent, activity } = e.payload;
+    if (!council || council.id !== councilId) return;
+    councilActivity[agent] = activity;
+    const i = council.members.findIndex((m) => m.agent === agent);
+    const heads = document.querySelectorAll('.c-col-head .act');
+    const target = agent === 'moderator' ? document.querySelector('.c-synth .act') : heads[i];
+    if (target && (agent === 'moderator' ? council.phase === 'converge' : council.members[i]?.status === 'running')) {
+      target.innerHTML = '<i class="codicon codicon-loading codicon-modifier-spin"></i>';
+      target.append(` ${activity}`);
     }
   });
 

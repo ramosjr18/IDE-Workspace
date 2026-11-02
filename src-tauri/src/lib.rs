@@ -3,10 +3,12 @@
 //!   store.rs      → caché propia de conversaciones, compartida por todos los agentes
 //!   agents.rs     → adaptadores: cómo cada CLI recibe esa conversación y responde
 //!   project.rs    → carpeta del proyecto donde trabajan los agentes (como `claude` o `code .`)
+//!   council.rs    → consejo: varios agentes deliberan y convergen en un ADR o política
 //!   term.rs       → terminal para instalar agentes e iniciar sesión
 //!   workspace.rs  → panel derecho: árbol de archivos y archivo que se está editando
 
 mod agents;
+mod council;
 mod env;
 mod project;
 mod store;
@@ -17,7 +19,7 @@ mod workspace;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 #[derive(Default)]
@@ -201,6 +203,151 @@ async fn chat(
     Ok(ChatReply { conversation_id: conv.id.clone(), title: conv.title.clone(), message: conv.messages.last().cloned().unwrap() })
 }
 
+// ---------- Consejo de agentes ----------
+
+#[derive(Serialize)]
+struct RoleInfo {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+}
+
+#[tauri::command]
+fn council_roles() -> Vec<RoleInfo> {
+    council::ROLES.iter().map(|(id, name, description)| RoleInfo { id, name, description }).collect()
+}
+
+/// Contexto inicial del consejo: la conversación actual en texto (lo más reciente, hasta ~12 000 caracteres).
+#[tauri::command]
+fn council_context(conversation_id: Option<String>) -> String {
+    let Some(conv) = conversation_id.as_deref().and_then(store::get) else { return String::new() };
+    let mut lines: Vec<String> = Vec::new();
+    let mut total = 0;
+    for m in conv.messages.iter().rev() {
+        let who = if m.role == "user" { "Usuario" } else { m.agent_name.as_deref().unwrap_or("Asistente") };
+        let line = format!("[{who}]: {}", m.text.trim());
+        total += line.chars().count();
+        if total > 12_000 && !lines.is_empty() {
+            break;
+        }
+        lines.push(line);
+    }
+    lines.reverse();
+    lines.join("\n\n")
+}
+
+#[tauri::command]
+fn council_list(current: State<'_, CurrentProject>) -> Vec<council::Summary> {
+    council::list(&current.get().to_string_lossy())
+}
+
+#[tauri::command]
+fn council_get(id: String) -> Result<council::Council, String> {
+    council::get(&id).ok_or_else(|| "Consejo no encontrado".into())
+}
+
+#[derive(serde::Deserialize)]
+struct MemberArg {
+    agent: String,
+    role: String,
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn council_start(
+    app: AppHandle,
+    current: State<'_, CurrentProject>,
+    runs: State<'_, Arc<council::Runs>>,
+    conversation_id: Option<String>,
+    topic: String,
+    output: String,
+    context: String,
+    members: Vec<MemberArg>,
+    moderator: String,
+) -> Result<council::Council, String> {
+    let members = members.into_iter().map(|m| council::NewMember { agent: m.agent, role: m.role }).collect();
+    let c = council::create(&current.get(), conversation_id, topic, output, context, members, moderator)?;
+    council::launch(app, runs.inner().clone(), c.clone(), council::Plan::Full)?;
+    Ok(c)
+}
+
+/// Otra ronda de contraste (y nueva síntesis), o solo rehacer la síntesis.
+#[tauri::command]
+fn council_round(app: AppHandle, runs: State<'_, Arc<council::Runs>>, id: String, synthesis_only: bool) -> Result<(), String> {
+    let c = council::get(&id).ok_or("Consejo no encontrado")?;
+    let plan = if synthesis_only { council::Plan::SynthesisOnly } else { council::Plan::AnotherRound };
+    council::launch(app, runs.inner().clone(), c, plan)
+}
+
+/// Comentario del usuario en el tablero (opcionalmente en respuesta a una tarjeta).
+#[tauri::command]
+fn council_comment(app: AppHandle, id: String, text: String, kind: String, reply_to: Option<String>) -> Result<council::Council, String> {
+    let mut c = council::get(&id).ok_or("Consejo no encontrado")?;
+    if text.trim().is_empty() {
+        return Err("Escribe el comentario".into());
+    }
+    let reply_to = reply_to.filter(|r| c.cards.iter().any(|k| &k.id == r));
+    council::add_cards(&mut c, "user", "Tú", vec![(kind, reply_to, text.trim().to_string())]);
+    council::save(&mut c)?;
+    let _ = app.emit("council-update", &c);
+    Ok(c)
+}
+
+#[tauri::command]
+fn council_cancel(runs: State<'_, Arc<council::Runs>>, id: String) {
+    runs.cancel(&id)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Approved {
+    council: council::Council,
+    conversation_id: String,
+}
+
+/// Aprueba el documento (con los cambios que hayas hecho), lo guarda en el repo y deja un
+/// resumen en el chat para que el siguiente agente lo tenga como contexto.
+#[tauri::command]
+fn council_approve(app: AppHandle, id: String, document: String) -> Result<Approved, String> {
+    let mut c = council::get(&id).ok_or("Consejo no encontrado")?;
+    if document.trim().is_empty() {
+        return Err("El documento está vacío".into());
+    }
+    let rel = council::write_document(&c, &document)?;
+    if let Some(s) = c.synthesis.as_mut() {
+        s.document = document.clone();
+    }
+    c.document_path = Some(rel.clone());
+    c.phase = "approved".into();
+    council::save(&mut c)?;
+    let _ = app.emit("council-update", &c);
+    let s = c.synthesis.clone().unwrap_or_default();
+    let mut summary = format!(
+        "Consejo sobre «{}» aprobado ({}). Documento: {rel}",
+        c.topic,
+        c.members.iter().map(|m| format!("{} · {}", m.agent_name, m.role_name)).collect::<Vec<_>>().join(", ")
+    );
+    if !s.agreements.is_empty() {
+        summary.push_str(&format!("\n\nAcuerdos:\n- {}", s.agreements.join("\n- ")));
+    }
+    if !s.open.is_empty() {
+        summary.push_str(&format!("\n\nPuntos abiertos:\n- {}", s.open.join("\n- ")));
+    }
+    let conv = store::append(
+        c.conversation_id.as_deref(),
+        &c.project,
+        vec![store::Message {
+            role: "assistant".into(),
+            text: summary,
+            agent: Some("consejo".into()),
+            agent_name: Some("Consejo".into()),
+            ts: String::new(),
+            steps: None,
+        }],
+    )?;
+    Ok(Approved { council: c, conversation_id: conv.id })
+}
+
 #[tauri::command]
 fn list_conversations(current: State<'_, CurrentProject>) -> Vec<store::Summary> {
     store::list(&current.get().to_string_lossy())
@@ -257,6 +404,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Busy::default())
         .manage(Running::default())
+        .manage(Arc::new(council::Runs::default()))
         .manage(CurrentProject(Mutex::new(initial.clone())))
         .manage(term::Terminals::default())
         .manage(workspace::Watcher::default())
@@ -278,6 +426,15 @@ pub fn run() {
             list_agents,
             chat,
             cancel_chat,
+            council_roles,
+            council_context,
+            council_list,
+            council_get,
+            council_start,
+            council_round,
+            council_comment,
+            council_cancel,
+            council_approve,
             list_conversations,
             get_conversation,
             term_start,

@@ -39,6 +39,8 @@ pub struct Agent {
     pub prompt_arg: bool,
     /// Formato de la salida (con las opciones de `args`), para mostrar sus pasos en vivo.
     pub format: Format,
+    /// Opciones para trabajar en modo solo lectura (consejo): puede leer el repo, no modificarlo.
+    pub readonly_args: &'static [&'static str],
     /// Límite de contexto en caracteres (agy lo recibe como argumento: Windows limita a ~32 000).
     pub max_context: usize,
     pub install_unix: &'static str,
@@ -55,6 +57,7 @@ pub const AGENTS: &[Agent] = &[
         args: &["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
         prompt_arg: false,
         format: Format::Claude,
+        readonly_args: &["-p", "--permission-mode", "plan", "--output-format", "stream-json", "--verbose"],
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "curl -fsSL https://claude.ai/install.sh | bash",
         install_win: "irm https://claude.ai/install.ps1 | iex",
@@ -68,6 +71,7 @@ pub const AGENTS: &[Agent] = &[
         args: &["exec", "--approve-for-me", "--skip-git-repo-check", "--json", "-"],
         prompt_arg: false,
         format: Format::Codex,
+        readonly_args: &["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--json", "-"],
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "npm install -g @openai/codex",
         install_win: "npm install -g @openai/codex",
@@ -81,6 +85,7 @@ pub const AGENTS: &[Agent] = &[
         args: &["run", "--auto", "--format", "json"],
         prompt_arg: false,
         format: Format::OpenCode,
+        readonly_args: &["run", "--agent", "plan", "--format", "json"],
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "npm install -g opencode-ai",
         install_win: "npm install -g opencode-ai",
@@ -94,6 +99,7 @@ pub const AGENTS: &[Agent] = &[
         args: &["--dangerously-skip-permissions", "--print-timeout", "30m", "--output-format", "stream-json"],
         prompt_arg: true,
         format: Format::Agy,
+        readonly_args: &["--mode", "plan", "--print-timeout", "30m", "--output-format", "stream-json"],
         max_context: 20_000,
         install_unix: "curl -fsSL https://antigravity.google/cli | bash",
         install_win: "irm https://antigravity.google/cli/install.ps1 | iex",
@@ -107,6 +113,7 @@ pub const AGENTS: &[Agent] = &[
         args: &["--yolo", "--skip-trust"],
         prompt_arg: false,
         format: Format::Plain,
+        readonly_args: &["--skip-trust"],
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "npm install -g @google/gemini-cli",
         install_win: "npm install -g @google/gemini-cli",
@@ -120,6 +127,7 @@ pub const AGENTS: &[Agent] = &[
         args: &["--yolo", "--no-ask-user", "--output-format", "json"],
         prompt_arg: false,
         format: Format::Copilot,
+        readonly_args: &["--allow-all-tools", "--deny-tool", "write", "--deny-tool", "shell", "--no-ask-user", "--output-format", "json"],
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "npm install -g @github/copilot",
         install_win: "npm install -g @github/copilot",
@@ -255,6 +263,28 @@ pub async fn run(
     agent: &Agent,
     prompt: &str,
     cwd: &Path,
+    on_step: impl FnMut(&Step),
+    cancel: tokio::sync::oneshot::Receiver<()>,
+) -> Result<RunResult, String> {
+    run_with(agent, agent.args, prompt, cwd, on_step, cancel).await
+}
+
+/// Igual que `run`, pero en modo solo lectura (para el consejo).
+pub async fn run_readonly(
+    agent: &Agent,
+    prompt: &str,
+    cwd: &Path,
+    on_step: impl FnMut(&Step),
+    cancel: tokio::sync::oneshot::Receiver<()>,
+) -> Result<RunResult, String> {
+    run_with(agent, agent.readonly_args, prompt, cwd, on_step, cancel).await
+}
+
+async fn run_with(
+    agent: &Agent,
+    args: &[&str],
+    prompt: &str,
+    cwd: &Path,
     mut on_step: impl FnMut(&Step),
     mut cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<RunResult, String> {
@@ -263,7 +293,8 @@ pub async fn run(
     if agent.prompt_arg {
         cmd.arg("-p").arg(prompt);
     }
-    cmd.args(agent.args).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Algunas CLIs (OpenCode) toman la carpeta de PWD y no de la carpeta del proceso.
+    cmd.args(args).current_dir(cwd).env("PWD", cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("No se pudo ejecutar {}: {e}", agent.cmd))?;
     let mut stdin = child.stdin.take().unwrap();
     let input = if agent.prompt_arg { String::new() } else { prompt.to_string() };
@@ -283,6 +314,8 @@ pub async fn run(
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let deadline = tokio::time::sleep(RUN_TIMEOUT);
     tokio::pin!(deadline);
+    // Solo se detiene con una orden explícita; si el emisor desaparece sin enviarla, se sigue.
+    let mut cancel_live = true;
     loop {
         tokio::select! {
             line = lines.next_line() => match line {
@@ -293,9 +326,12 @@ pub async fn run(
                 }
                 _ => break,
             },
-            _ = &mut cancel => {
-                let _ = child.kill().await;
-                return Err("Detenido.".into());
+            r = &mut cancel, if cancel_live => {
+                if r.is_ok() {
+                    let _ = child.kill().await;
+                    return Err("Detenido.".into());
+                }
+                cancel_live = false;
             }
             _ = &mut deadline => {
                 let _ = child.kill().await;

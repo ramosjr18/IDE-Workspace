@@ -35,7 +35,7 @@ La cabecera muestra el proyecto y el agente activos («mi-repo · Claude»). Tod
 
 - **Proyecto**: la carpeta donde trabajan los agentes. Al pulsarla puedes elegir otra.
 - **Agente**: elige el agente. Debajo se ve su estado (**Listo**, **Sin sesión** o **No instalado**) con el botón para arreglarlo. **Agentes** muestra todos con su estado, como un panel de cuentas.
-- **Conversaciones**: «Nueva conversación» y la lista de conversaciones del proyecto.
+- **Conversaciones**: «Nueva conversación», «Convocar consejo» y la lista de conversaciones del proyecto.
 - **Vista**: mostrar u ocultar el panel de archivos.
 
 El menú se cierra al elegir algo, al pulsar fuera o con Esc.
@@ -66,9 +66,31 @@ El botón **Enviar** pasa a ser **Detener** mientras el agente trabaja. Los paso
 
 Cada CLI informa de sus pasos en su propio formato (Claude `stream-json`, Codex `--json`, OpenCode `--format json`, Antigravity `stream-json`, Copilot `--output-format json`); la app los traduce a uno común (`src-tauri/src/stream.rs`). Gemini solo muestra el texto de la respuesta.
 
+## Consejo de agentes
+
+Para decisiones con peso (una política, un ADR, una arquitectura), en lugar de preguntar a un solo agente puedes convocar un **consejo**: varios agentes opinan, se critican entre ellos y un moderador redacta la propuesta. Después vuelves al chat de un solo agente con la decisión como contexto.
+
+Se convoca escribiendo `/consejo tema` en el chat, desde **☰ → Convocar consejo** o con **+** en la pestaña **Consejo**. Eliges:
+
+- **Tema** y **resultado**: ADR (`docs/adr/`), política (`docs/politicas/`) o nota de decisión (`docs/decisiones/`).
+- **Participantes**, cada uno con un rol: arquitecto, abogado del diablo, seguridad, coste y operación, usuario y producto, o libre.
+- **Moderador**: resume y redacta; mejor uno que no participe.
+- **Contexto**: la conversación actual, que puedes editar antes de empezar.
+
+Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
+
+1. **Divergir**: cada agente da su propuesta sin ver la de los demás.
+2. **Contrastar**: cada uno lee al resto y responde con apoyos, objeciones o preguntas, citando la tarjeta (C1, C2…).
+3. **Converger**: el moderador resume acuerdos y puntos abiertos y redacta el documento.
+4. **Revisión**: editas el documento si quieres y eliges **Aprobar y guardar**, **Otra ronda** o **Rehacer síntesis**. También puedes añadir tus comentarios, que cuentan en la siguiente ronda.
+
+Al aprobar, el documento se guarda numerado en el repo (por ejemplo `docs/adr/0004-politica-de-versionado.md`) y en el chat aparece un resumen con los acuerdos y los puntos abiertos.
+
+Durante el consejo los agentes trabajan en **modo solo lectura**: leen el repo para fundamentar su opinión, pero no lo modifican (Claude `--permission-mode plan`, Codex `--sandbox read-only`, OpenCode `--agent plan`, Antigravity `--mode plan`, Copilot sin herramientas de escritura ni shell). Cada participante hace dos llamadas y el moderador una; el diálogo lo indica antes de empezar.
+
 ## Panel de archivos (como VS Code)
 
-A la derecha hay un panel con dos pestañas. Se oculta desde **☰ → Vista** y se ensancha arrastrando su borde.
+A la derecha hay un panel con tres pestañas: Worktree, Archivo y Consejo (ver arriba). Se oculta desde **☰ → Vista** y se ensancha arrastrando su borde.
 
 - **Worktree**: el explorador del proyecto, con los colores y letras de git de VS Code (**M** modificado, **U** sin seguimiento, **A** añadido, **D** borrado) y la rama actual. Respeta `.gitignore`. El botón de filtro muestra solo los archivos con cambios.
 - **Archivo**: el editor de VS Code (Monaco). Tiene resaltado de sintaxis, minimapa y búsqueda (⌘F / Ctrl+F), y se puede editar y guardar (⌘S / Ctrl+S). En el margen, barras como las de VS Code: verde para líneas añadidas, azul para modificadas y un triángulo rojo donde se borró algo. El botón de comparar abre la vista de cambios respecto al último commit.
@@ -87,6 +109,7 @@ Mientras un agente trabaja, el panel muestra el archivo que está editando (bot�
 | Chat | `ui/index.html` | La ventana: chat, menú ☰, panel de archivos y terminal. |
 | Caché propia | `src-tauri/src/store.rs` | Guarda cada conversación en disco (`~/.ide-workspace-chat/conversations`, o `CHAT_DATA_DIR`) con qué agente escribió cada respuesta. No depende de ninguna CLI. |
 | Adaptadores | `src-tauri/src/agents.rs` | Convierte la conversación guardada en el contexto del CLI elegido y lo ejecuta. Aquí se cambian comandos y modelos. |
+| Consejo | `src-tauri/src/council.rs` | Fases del consejo, prompts, tarjetas, síntesis y documento final. |
 | Pasos en vivo | `src-tauri/src/stream.rs` | Traduce la salida JSON de cada CLI a pasos comunes (comando, edición, lectura, texto…). |
 | Proyecto | `src-tauri/src/project.rs` | Carpeta donde trabajan los agentes y comando `agentes`. |
 | Panel de archivos | `src-tauri/src/workspace.rs` | Árbol del proyecto, estado git, líneas cambiadas, guardar y vigilancia de la carpeta. |
