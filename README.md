@@ -26,7 +26,7 @@ El comando `agentes` se instala desde la app: **☰ → Agentes → Instalar com
 
 - Cada carpeta abre su propia ventana, con el nombre del proyecto en el título.
 - Cada proyecto tiene sus propias conversaciones.
-- Si abres la app desde el Finder o el menú, se abre en el último proyecto que usaste.
+- Si abres la app desde el Finder o el menú (sin carpeta), sale la pantalla de inicio: **Abrir carpeta…** y la lista de proyectos recientes. Hasta que eliges una, el chat está desactivado.
 - Para cambiar de proyecto sin cerrar la app: **☰ → Proyecto**, pulsa la carpeta y elige otra.
 
 ## Uso
@@ -40,6 +40,13 @@ La cabecera muestra el proyecto y el agente activos («mi-repo · Claude»). Tod
 
 El menú se cierra al elegir algo, al pulsar fuera o con Esc.
 
+El panel del chat tiene dos pestañas:
+
+- **Chat**: la conversación con el agente.
+- **Terminal**: tu shell (`$SHELL`; PowerShell en Windows) abierta en la carpeta del proyecto. Sigue viva al cambiar de pestaña y se abre de nuevo al cambiar de proyecto.
+
+Las respuestas de los agentes se ven en Markdown: tablas, listas y bloques de código con colores y botón para copiar. Los enlaces web se abren en el navegador y las rutas del proyecto, en el panel de archivos.
+
 **Instalar** e **Iniciar sesión** abren un terminal dentro de la app con el instalador oficial o el login de cada CLI. Los enlaces del terminal se abren en el navegador con un clic.
 
 | Agente | Instalación | Inicio de sesión |
@@ -52,6 +59,16 @@ El menú se cierra al elegir algo, al pulsar fuera o con Esc.
 | Copilot | `npm install -g @github/copilot` | `copilot login` (también vale la sesión de `gh`) |
 
 Codex, OpenCode, Gemini y Copilot se instalan con npm, así que necesitan Node.js.
+
+## Uso de los agentes
+
+La pestaña **Uso** del panel derecho muestra en una sola vista una tarjeta por cada CLI instalada:
+
+- **Límites**: el porcentaje gastado de cada ventana (sesión de 5 h, semana…) y cuándo se reinicia.
+- **Tokens por día**: los últimos 7 días.
+- **Por modelo**: los modelos más usados en la semana.
+
+Todo se calcula en la app (Rust), en macOS, Windows y Linux: las estadísticas salen de los archivos locales de cada CLI y los límites, de los mismos servicios que usan las CLIs. La app nunca modifica ni renueva los tokens de sesión: si uno caduca, te pide abrir la CLI. Los detalles están en [`docs/plan-pestanas-y-uso.md`](docs/plan-pestanas-y-uso.md).
 
 ## Ver lo que hace cada agente
 
