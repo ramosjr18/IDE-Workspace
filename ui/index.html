@@ -2121,7 +2121,8 @@
 
   listen('panes-changed', () => {
     const before = paneViews.size;
-    loadPanes().then(() => { if (paneViews.size > before && !$('agentsView').hidden) fitPanes(); });
+    // Al lanzarse un agente nuevo, la vista Agentes se abre sola.
+    loadPanes().then(() => { if (paneViews.size > before) setTab('agents'); });
   });
   listen('term-output', (e) => {
     const v = paneViews.get(e.payload.id);

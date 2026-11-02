@@ -394,7 +394,19 @@ pub fn start_server(app: AppHandle) {
         let addr = listener.local_addr().map(|a| a.to_string()).unwrap_or_default();
         let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
         match write_shim() {
-            Ok(shim_dir) => env::set_launcher(env::Launcher { addr, token: token.clone(), shim_dir }),
+            Ok(shim_dir) => {
+                // Solo en desarrollo: para probar `agentes run` desde fuera de la app. Archivo privado (0600).
+                #[cfg(all(debug_assertions, unix))]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    use std::io::Write;
+                    let info = serde_json::json!({ "addr": addr, "token": token, "shim": shim_dir });
+                    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(data_dir().join("launcher-debug.json")) {
+                        let _ = f.write_all(info.to_string().as_bytes());
+                    }
+                }
+                env::set_launcher(env::Launcher { addr, token: token.clone(), shim_dir })
+            }
             Err(e) => {
                 eprintln!("agentes run no disponible: {e}");
                 return;
