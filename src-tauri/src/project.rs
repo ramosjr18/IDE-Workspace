@@ -2,7 +2,8 @@
 //! dentro de un repo. Se elige al abrir la app:
 //!   1. `agentes <carpeta>` (o la ruta como argumento del ejecutable)
 //!   2. si se lanzó desde una terminal, la carpeta actual
-//!   3. si se abrió desde el Finder o el menú, el último proyecto usado (o tu carpeta de usuario)
+//!   3. si se abrió desde el Finder o el menú, ninguno: la app muestra la pantalla de inicio
+//!      con «Abrir carpeta…» y los proyectos recientes.
 
 use crate::env::{home, IS_WIN};
 use crate::store::{data_dir, write_atomic};
@@ -23,37 +24,64 @@ impl Project {
     }
 }
 
-fn last_file() -> PathBuf {
-    data_dir().join("last-project")
+const MAX_RECENT: usize = 10;
+
+fn recent_file() -> PathBuf {
+    data_dir().join("recent-projects.json")
 }
 
+/// Lista guardada, la más reciente primero. Migra el `last-project` de versiones anteriores.
+fn recent_paths() -> Vec<PathBuf> {
+    if let Some(list) = fs::read_to_string(recent_file()).ok().and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()) {
+        return list.into_iter().map(PathBuf::from).collect();
+    }
+    let old = data_dir().join("last-project");
+    match fs::read_to_string(&old) {
+        Ok(t) if !t.trim().is_empty() => vec![PathBuf::from(t.trim())],
+        _ => Vec::new(),
+    }
+}
+
+/// Apunta la carpeta como la más reciente.
 pub fn remember(path: &Path) {
+    let mut list: Vec<PathBuf> = recent_paths().into_iter().filter(|p| p != path).collect();
+    list.insert(0, path.to_path_buf());
+    list.truncate(MAX_RECENT);
+    let json: Vec<String> = list.iter().map(|p| p.to_string_lossy().to_string()).collect();
     let _ = fs::create_dir_all(data_dir());
-    let _ = write_atomic(&last_file(), &path.to_string_lossy());
+    if write_atomic(&recent_file(), &serde_json::to_string(&json).unwrap_or_default()).is_ok() {
+        let _ = fs::remove_file(data_dir().join("last-project"));
+    }
 }
 
-fn last() -> Option<PathBuf> {
-    let p = PathBuf::from(fs::read_to_string(last_file()).ok()?.trim());
-    p.is_dir().then_some(p)
+/// Proyectos recientes que todavía existen.
+pub fn recent() -> Vec<Project> {
+    recent_paths().iter().filter(|p| p.is_dir()).map(|p| Project::from_path(p)).collect()
 }
 
-/// Carpeta inicial según cómo se abrió la app.
-pub fn initial() -> PathBuf {
+/// `tauri dev` arranca el binario dentro de `src-tauri`: esa carpeta no es un proyecto.
+fn is_own_source(dir: &Path) -> bool {
+    cfg!(debug_assertions) && dir == Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Carpeta inicial según cómo se abrió la app. `None`: pantalla de inicio.
+pub fn initial() -> Option<PathBuf> {
+    initial_from(std::env::args().skip(1), std::env::current_dir().ok())
+}
+
+fn initial_from(args: impl Iterator<Item = String>, cwd: Option<PathBuf>) -> Option<PathBuf> {
     // Ruta pasada como argumento (se ignoran opciones como -psn_… de macOS antiguos).
-    if let Some(arg) = std::env::args().skip(1).find(|a| !a.starts_with('-')) {
+    let mut args = args;
+    if let Some(arg) = args.find(|a| !a.starts_with('-')) {
         let p = PathBuf::from(arg);
         if p.is_dir() {
-            return p.canonicalize().unwrap_or(p);
+            return Some(p.canonicalize().unwrap_or(p));
         }
     }
-    // Lanzada desde una terminal: la carpeta actual. Desde el Finder la carpeta actual es «/».
-    if let Ok(cwd) = std::env::current_dir() {
-        let is_root = cwd.parent().is_none();
-        if !is_root && cwd != home() {
-            return cwd;
-        }
-    }
-    last().unwrap_or_else(home)
+    // Lanzada desde una terminal: la carpeta actual. Desde el Finder o el menú es «/» o tu carpeta de usuario.
+    let cwd = cwd?;
+    let is_root = cwd.parent().is_none();
+    (!is_root && cwd != home() && !is_own_source(&cwd)).then_some(cwd)
 }
 
 /// Instala el comando `agentes` para abrir la app en una carpeta desde la terminal.
@@ -106,4 +134,24 @@ pub fn install_cli() -> Result<String, String> {
         msg.push_str(" Esa carpeta no está en tu PATH: añade export PATH=\"$HOME/.local/bin:$PATH\" a tu ~/.zshrc o ~/.bashrc.");
     }
     Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn carpeta_inicial() {
+        let tmp = std::env::temp_dir();
+        let none = std::iter::empty::<String>;
+        // Argumento con carpeta existente
+        assert_eq!(initial_from(vec![tmp.to_string_lossy().to_string()].into_iter(), None), Some(tmp.canonicalize().unwrap()));
+        // Desde una terminal en una carpeta cualquiera
+        assert_eq!(initial_from(none(), Some(tmp.clone())), Some(tmp.clone()));
+        // Desde el menú: «/» o la carpeta de usuario → pantalla de inicio
+        assert_eq!(initial_from(none(), Some(PathBuf::from("/"))), None);
+        assert_eq!(initial_from(none(), Some(home())), None);
+        // `tauri dev`: el propio src-tauri no es un proyecto
+        assert_eq!(initial_from(none(), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")))), None);
+    }
 }
