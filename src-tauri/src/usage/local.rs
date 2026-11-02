@@ -134,6 +134,9 @@ impl Stats {
 }
 
 pub(super) fn collect(r: &mut UsageRecord) {
+    if r.id == "opencode" {
+        opencode(&opencode_db(), Local::now().date_naive()).apply(r);
+    }
     if r.id == "codex" {
         codex(
             &recent_files(&codex_dir().join("sessions")),
@@ -289,4 +292,123 @@ fn codex_fixture() {
     assert_eq!(r.today.prompts, Some(3));
     assert_eq!(r.models[0].tokens, 150);
     assert_eq!(r.models[1].tokens, 50);
+}
+pub(super) fn opencode_db() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| crate::env::home().join(".local/share"))
+        .join("opencode/opencode.db")
+}
+pub(super) fn open_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(Duration::from_millis(50))?;
+    Ok(conn)
+}
+fn opencode(path: &Path, today: NaiveDate) -> Stats {
+    let mut stats = Stats::new(today);
+    let Ok(conn) = open_db(path) else {
+        return stats;
+    };
+    let mut seen = HashSet::new();
+    let start = today - TimeDelta::days(6);
+    let Some(start_ms) = start
+        .and_hms_opt(0, 0, 0)
+        .and_then(|d| d.and_local_timezone(Local).earliest())
+        .map(|d| d.timestamp_millis())
+    else {
+        return stats;
+    };
+    for (table, role, model) in [
+        ("session_message", "type = 'assistant'", "$.model.id"),
+        (
+            "message",
+            "CASE WHEN json_valid(data) THEN json_extract(data, '$.role') END = 'assistant'",
+            "$.modelID",
+        ),
+    ] {
+        let extract =
+            |key: &str| format!("CASE WHEN json_valid(data) THEN json_extract(data, '{key}') END");
+        let columns = [
+            "$.time.created",
+            model,
+            "$.tokens.input",
+            "$.tokens.output",
+            "$.tokens.reasoning",
+            "$.tokens.cache.read",
+            "$.tokens.cache.write",
+        ]
+        .map(extract);
+        let sql = format!("SELECT id, session_id, COALESCE({}, time_created), {}, {}, {}, {}, {}, {} FROM {table} WHERE {role} AND COALESCE({}, time_created) >= ?1",
+            columns[0],columns[1],columns[2],columns[3],columns[4],columns[5],columns[6],columns[0]);
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            continue;
+        };
+        let Ok(rows) = stmt.query_map([start_ms], |row| {
+            let mut tokens = 0u64;
+            for i in 4..9 {
+                tokens =
+                    tokens.saturating_add(row.get::<_, Option<i64>>(i)?.unwrap_or(0).max(0) as u64);
+            }
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?
+                    .unwrap_or_else(|| "opencode".into()),
+                tokens,
+            ))
+        }) else {
+            continue;
+        };
+        for (id, session, at, model, tokens) in rows.flatten() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let model = model
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or("opencode");
+            stats.add(day(&Value::from(at)), tokens, model, &session);
+        }
+    }
+    stats
+}
+
+#[cfg(test)]
+#[test]
+fn opencode_read_only_wal_and_migration() {
+    let path = std::env::temp_dir().join(format!("usage-{}.db", uuid::Uuid::new_v4()));
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, time_created INTEGER, data TEXT); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, data TEXT);").unwrap();
+    let created = chrono::DateTime::parse_from_rfc3339("2026-11-02T12:00:00Z")
+        .unwrap()
+        .timestamp_millis();
+    let data = include_str!("../../tests/fixtures/usage/opencode-message.json");
+    writer
+        .execute(
+            "INSERT INTO session_message VALUES ('m1','s','assistant',?1,?2)",
+            rusqlite::params![created, data],
+        )
+        .unwrap();
+    writer
+        .execute(
+            "INSERT INTO message VALUES ('m1','s',?1,?2), ('m2','s',?1,?2), ('bad','s',?1,'{')",
+            rusqlite::params![created, data],
+        )
+        .unwrap();
+    writer
+        .execute("INSERT INTO message VALUES ('old','s',0,?1)", [data])
+        .unwrap();
+    let conn = open_db(&path).unwrap();
+    assert!(conn.execute("DELETE FROM message", []).is_err());
+    let mut r = UsageRecord::empty("opencode", "OpenCode");
+    opencode(&path, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()).apply(&mut r);
+    assert_eq!(r.today.tokens, 220);
+    assert_eq!(r.today.prompts, Some(2));
+    assert_eq!(r.today.sessions, Some(1));
+    assert_eq!(r.models[0].model, "test");
+    drop(conn);
+    drop(writer);
+    let _ = fs::remove_file(path);
 }

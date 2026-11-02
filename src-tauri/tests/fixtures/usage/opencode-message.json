@@ -1,0 +1,1 @@
+{"role":"assistant","model":{"id":"provider/test"},"modelID":"provider/test","tokens":{"input":10,"output":20,"reasoning":5,"cache":{"read":30,"write":45}}}
