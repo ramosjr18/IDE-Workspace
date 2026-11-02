@@ -70,7 +70,53 @@
   .pill.login, .pill.missing { color: var(--warn); }
   .pill.checking { color: var(--muted); }
   #layout { flex: 1; display: flex; min-height: 0; }
-  #chat { flex: 1; display: flex; flex-direction: column; min-width: 320px; }
+  #chat { flex: 1; display: flex; flex-direction: column; min-width: 320px; min-height: 0; }
+  #chatView { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #chatView[hidden], #shellView[hidden] { display: none; }
+  #shellView { flex: 1; display: flex; flex-direction: column; min-height: 0; background: #111; position: relative; }
+  #shell { flex: 1; min-height: 0; padding: 6px 8px; }
+  #shellEnded { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
+  #shellEnded[hidden] { display: none; }
+  /* Sin proyecto: pantalla de inicio */
+  body.no-project .needs-project { display: none !important; }
+  .start { margin: auto; width: min(460px, 100%); display: flex; flex-direction: column; gap: 14px; text-align: left; }
+  .start h2 { margin: 0; font-size: 20px; }
+  .start p { margin: 0; color: var(--muted); }
+  .start .recent { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .start .recent button { border: 0; border-radius: 0; border-bottom: 1px solid var(--border); background: var(--panel); text-align: left; padding: 8px 12px; display: flex; flex-direction: column; gap: 1px; }
+  .start .recent button:last-child { border-bottom: 0; }
+  .start .recent button:hover { background: color-mix(in srgb, var(--me) 10%, var(--panel)); }
+  .start .recent .p { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Uso de cada CLI */
+  #usageView .usage-list { flex: 1; overflow-y: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-content: start; }
+  .u-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--bg); min-width: 0; }
+  .u-head { display: flex; align-items: baseline; gap: 8px; }
+  .u-head .name { font-weight: 600; font-size: 15px; }
+  .u-head .plan { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .u-head .today { margin-left: auto; font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
+  .u-status { font-size: 13px; color: var(--warn); }
+  .u-status code { font: 12px ui-monospace, Menlo, monospace; }
+  .u-sec { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: -4px; }
+  .u-limit { display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; font-size: 13px; }
+  .u-limit .pct { font: 12px ui-monospace, Menlo, monospace; }
+  .u-limit .reset { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); }
+  .u-bar { grid-column: 1 / -1; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }
+  .u-bar > i { display: block; height: 100%; background: var(--text); border-radius: 3px; }
+  .u-bar.warn > i { background: var(--warn); }
+  .u-bar.full > i { background: var(--error); }
+  .u-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; align-items: end; height: 56px; }
+  .u-days .d { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 3px; height: 100%; font-size: 10.5px; color: var(--muted); min-width: 0; }
+  .u-days .d i { display: block; width: 100%; max-width: 22px; min-height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--text) 35%, transparent); }
+  .u-days .d.today { color: var(--text); font-weight: 600; }
+  .u-days .d.today i { background: var(--text); }
+  .u-models { display: flex; flex-direction: column; gap: 3px; }
+  .u-model { position: relative; display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; padding: 3px 8px; border-radius: 4px; overflow: hidden; }
+  .u-model > i { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--text) 9%, transparent); z-index: 0; }
+  .u-model > span { position: relative; z-index: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .u-model .n { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); flex: none; }
+  .u-more { font-size: 12px; color: var(--muted); }
+  .u-more summary { cursor: pointer; }
+
   #resizer { width: 5px; cursor: col-resize; background: var(--border); flex: none; }
   #resizer:hover, #resizer.dragging { background: var(--me); }
   #panel { width: var(--panel-w, 42%); min-width: 260px; max-width: 75%; display: flex; flex-direction: column; background: var(--panel); flex: none; }
@@ -285,31 +331,52 @@
     </div>
     <button id="openAgents" type="button" class="item"><i class="codicon codicon-account"></i> Agentes</button>
   </section>
-  <section class="grow">
+  <section class="grow needs-project">
     <h3>Conversaciones</h3>
     <button id="reset" type="button" class="item"><i class="codicon codicon-add"></i> Nueva conversación</button>
     <button id="menuCouncil" type="button" class="item"><i class="codicon codicon-organization"></i> Convocar consejo</button>
     <div id="convs" class="conv-list"></div>
   </section>
-  <section>
+  <section class="needs-project">
     <h3>Vista</h3>
     <button id="togglePanel" type="button" class="item"><i class="codicon codicon-layout-sidebar-right"></i> <span id="togglePanelText">Ocultar panel de archivos</span></button>
   </section>
 </nav>
 <main id="layout">
   <section id="chat">
-    <div id="messages"></div>
-    <form id="form">
-      <textarea id="input" placeholder="Escribe… (Enter envía · Shift+Enter salto de línea · ↑ ↓ mensajes anteriores)"></textarea>
-      <button id="send" class="primary" type="submit">Enviar</button>
-    </form>
+    <div class="tabs" role="tablist" id="leftTabs">
+      <button type="button" role="tab" id="tabChat" class="tab active">Chat</button>
+      <button type="button" role="tab" id="tabShell" class="tab">Terminal</button>
+    </div>
+    <div id="chatView">
+      <div id="messages"></div>
+      <form id="form">
+        <textarea id="input" placeholder="Escribe… (Enter envía · Shift+Enter salto de línea · ↑ ↓ mensajes anteriores)"></textarea>
+        <button id="send" class="primary" type="submit">Enviar</button>
+      </form>
+    </div>
+    <div id="shellView" hidden>
+      <div id="shell"></div>
+      <div id="shellEnded" hidden><span id="shellEndedText">Proceso terminado</span> <button type="button" id="shellRestart">Abrir otra</button></div>
+    </div>
   </section>
   <div id="resizer" title="Arrastra para cambiar el ancho"></div>
   <aside id="panel">
     <div class="tabs" role="tablist">
-      <button type="button" role="tab" id="tabTree" class="tab active">Worktree <span id="treeCount" class="count"></span></button>
-      <button type="button" role="tab" id="tabFile" class="tab">Archivo <span id="fileTabName" class="count"></span></button>
-      <button type="button" role="tab" id="tabCouncil" class="tab">Consejo <span id="councilTabState" class="count"></span></button>
+      <button type="button" role="tab" id="tabTree" class="tab active needs-project">Worktree <span id="treeCount" class="count"></span></button>
+      <button type="button" role="tab" id="tabFile" class="tab needs-project">Archivo <span id="fileTabName" class="count"></span></button>
+      <button type="button" role="tab" id="tabCouncil" class="tab needs-project">Consejo <span id="councilTabState" class="count"></span></button>
+      <button type="button" role="tab" id="tabUsage" class="tab">Uso</button>
+    </div>
+    <div id="usageView" class="view" hidden>
+      <div class="toolbar">
+        <span class="section-title">Uso de los agentes</span>
+        <span id="usageUpdated" class="muted"></span>
+        <span class="actions">
+          <button type="button" class="icon" id="refreshUsage" title="Actualizar ahora"><i class="codicon codicon-refresh"></i></button>
+        </span>
+      </div>
+      <div id="usageList" class="usage-list"></div>
     </div>
     <div id="treeView" class="view">
       <div class="toolbar explorer-head">
@@ -424,7 +491,7 @@
   let agents = [];
   let project = null; // { path, name }: carpeta donde trabajan los agentes
   let conversationId = null;
-  const convKey = () => `conversationId:${project.path}`;
+  const convKey = () => `conversationId:${project?.path || ''}`;
 
   document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
 
@@ -686,6 +753,7 @@
     const href = a.getAttribute('href') || '';
     if (/^(https?:|mailto:)/i.test(href)) return openUrl(href);
     let path = decodeURIComponent(href.replace(/^file:\/\//, '')).replace(/#.*$/, '').replace(/:\d+(:\d+)?$/, '');
+    if (!project) return;
     if (path.startsWith(project.path + '/')) path = path.slice(project.path.length + 1);
     else if (path.startsWith('/')) return;
     path = path.replace(/^\.\//, '');
@@ -900,8 +968,61 @@
   $('openAgents').addEventListener('click', () => { closeMenu(); $('agentsDialog').showModal(); });
 
   // ---------- Proyecto (carpeta donde trabajan los agentes) ----------
+  // Sin carpeta: pantalla de inicio con «Abrir carpeta…» y los proyectos recientes.
+  async function showStart() {
+    project = null;
+    document.body.classList.add('no-project');
+    $('projectName').textContent = 'Abrir carpeta…';
+    $('project').title = 'Elige la carpeta donde trabajarán los agentes';
+    renderContext();
+    $('input').disabled = true;
+    $('send').disabled = true;
+    setTab('usage');
+    const box = el('div', { className: 'start' },
+      el('h2', { textContent: 'Chat de agentes' }),
+      el('p', { textContent: 'Elige la carpeta del proyecto donde trabajarán los agentes.' }));
+    const open = el('button', { type: 'button', className: 'primary', textContent: 'Abrir carpeta…' });
+    open.addEventListener('click', chooseProject);
+    box.appendChild(open);
+    const recent = await invoke('recent_projects').catch(() => []);
+    if (recent.length) {
+      box.appendChild(el('p', { textContent: 'Recientes' }));
+      const list = el('div', { className: 'recent' });
+      for (const r of recent) {
+        const b = el('button', { type: 'button', title: r.path }, el('span', { textContent: r.name }), el('span', { className: 'p', textContent: r.path }));
+        b.addEventListener('click', () => switchProject(r.path));
+        list.appendChild(b);
+      }
+      box.appendChild(list);
+    }
+    showEmpty('');
+    $('messages').appendChild(box);
+    restartShellIfOpen();
+  }
+
+  async function switchProject(path) {
+    try {
+      await showProject(await invoke('open_project', { path }));
+    } catch (err) {
+      addMessage('assistant', String(err), 'Proyecto', true);
+    }
+  }
+
+  async function chooseProject() {
+    closeMenu();
+    const path = await pickFolder(project?.path);
+    if (path) switchProject(path);
+  }
+
   async function showProject(p) {
+    if (!p) return showStart();
+    const changed = project && project.path !== p.path;
     project = p;
+    document.body.classList.remove('no-project');
+    $('input').disabled = false;
+    $('send').disabled = false;
+    if ($('tabUsage').classList.contains('active') && !changed) setTab('tree');
+    if (changed || shellId) restartShellIfOpen();
     $('projectName').textContent = p.name;
     renderContext();
     $('project').title = `${p.path}\nClic para cambiar de carpeta`;
@@ -930,16 +1051,7 @@
     await loadConversationList();
   }
 
-  $('project').addEventListener('click', async () => {
-    closeMenu();
-    const path = await pickFolder(project?.path);
-    if (!path) return;
-    try {
-      showProject(await invoke('open_project', { path }));
-    } catch (err) {
-      addMessage('assistant', String(err), 'Proyecto', true);
-    }
-  });
+  $('project').addEventListener('click', chooseProject);
 
   $('installCli').addEventListener('click', async () => {
     try {
@@ -1013,9 +1125,12 @@
     $('tabTree').classList.toggle('active', name === 'tree');
     $('tabFile').classList.toggle('active', name === 'file');
     $('tabCouncil').classList.toggle('active', name === 'council');
+    $('tabUsage').classList.toggle('active', name === 'usage');
     $('treeView').hidden = name !== 'tree';
     $('fileView').hidden = name !== 'file';
     $('councilView').hidden = name !== 'council';
+    $('usageView').hidden = name !== 'usage';
+    usageVisible(name === 'usage');
     if (name !== 'council' && document.body.classList.contains('council-wide')) toggleWide(false);
   }
   $('tabTree').addEventListener('click', () => setTab('tree'));
@@ -1708,10 +1823,197 @@
     }
   });
 
+  // ---------- Panel izquierdo: pestañas Chat y Terminal ----------
+  // Cada pestaña: botón, vista y qué hacer al mostrarla. Para añadir otra, basta otra entrada.
+  const leftTabs = {
+    chat: { tab: 'tabChat', view: 'chatView', show: () => $('input').focus() },
+    shell: { tab: 'tabShell', view: 'shellView', show: showShell },
+  };
+  function setLeftTab(name) {
+    for (const [key, t] of Object.entries(leftTabs)) {
+      $(t.tab).classList.toggle('active', key === name);
+      $(t.view).hidden = key !== name;
+    }
+    store.set('leftTab', name);
+    leftTabs[name]?.show();
+  }
+  for (const [key, t] of Object.entries(leftTabs)) $(t.tab).addEventListener('click', () => setLeftTab(key));
+
+  // Terminal: shell interactiva en la carpeta del proyecto. Sigue viva al cambiar de pestaña.
+  let shellTerm = null, shellFit = null, shellId = null, shellStarting = false;
+  listen('term-output', (e) => { if (shellTerm && e.payload.id === shellId) shellTerm.write(e.payload.data); });
+  listen('term-exit', (e) => {
+    if (e.payload.id !== shellId) return;
+    shellId = null;
+    $('shellEndedText').textContent = `Proceso terminado (código ${e.payload.code})`;
+    $('shellEnded').hidden = false;
+  });
+
+  function ensureShellTerm() {
+    if (shellTerm) return;
+    shellTerm = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#111111' } });
+    shellFit = new FitAddon.FitAddon();
+    shellTerm.loadAddon(shellFit);
+    shellTerm.open($('shell'));
+    shellTerm.onData((data) => shellId && invoke('term_write', { id: shellId, data }));
+    shellTerm.onResize(({ cols, rows }) => shellId && invoke('term_resize', { id: shellId, cols, rows }));
+    shellTerm.registerLinkProvider({
+      provideLinks(y, cb) {
+        const line = shellTerm.buffer.active.getLine(y - 1)?.translateToString() || '';
+        cb([...line.matchAll(/https?:\/\/\S+/g)].map((m) => ({
+          range: { start: { x: m.index + 1, y }, end: { x: m.index + m[0].length, y } },
+          text: m[0],
+          activate: (_, text) => openUrl(text),
+        })));
+      },
+    });
+    new ResizeObserver(() => { if (!$('shellView').hidden) shellFit.fit(); }).observe($('shell'));
+  }
+
+  async function startShell() {
+    if (shellId || shellStarting) return;
+    shellStarting = true;
+    $('shellEnded').hidden = true;
+    shellTerm.reset();
+    shellFit.fit();
+    try {
+      shellId = await invoke('term_shell', { cols: shellTerm.cols, rows: shellTerm.rows });
+    } catch (err) {
+      shellTerm.write(`\x1b[31m${err}\x1b[0m\r\n`);
+    }
+    shellStarting = false;
+  }
+
+  function showShell() {
+    ensureShellTerm();
+    requestAnimationFrame(() => {
+      shellFit.fit();
+      startShell();
+      shellTerm.focus();
+    });
+  }
+
+  // Al cambiar de proyecto, la terminal se cierra y se abre otra en la carpeta nueva.
+  function restartShellIfOpen() {
+    if (shellId) invoke('term_kill', { id: shellId });
+    shellId = null;
+    if (!shellTerm) return;
+    shellTerm.reset();
+    if (!$('shellView').hidden) startShell();
+  }
+  $('shellRestart').addEventListener('click', () => { startShell(); shellTerm.focus(); });
+
+  // ---------- Panel derecho: Uso de cada CLI ----------
+  let usageTimer = null, usageLoading = false;
+  const fmtTokens = (n) => {
+    if (n == null) return '—';
+    for (const [d, u] of [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']]) if (n >= d) return `${(n / d).toFixed(n >= d * 100 ? 0 : 1)}${u}`;
+    return String(n);
+  };
+  const fmtReset = (iso) => {
+    if (!iso) return '';
+    const ms = new Date(iso) - Date.now();
+    if (!(ms > 0)) return 'Se reinicia ahora';
+    const m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+    return `Se reinicia en ${d ? `${d} d ${h} h` : h ? `${h} h ${mm} min` : `${mm} min`}`;
+  };
+  const DAY = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+
+  function usageCard(u) {
+    const card = el('div', { className: 'u-card' });
+    const head = el('div', { className: 'u-head' }, el('span', { className: 'name', textContent: u.name }));
+    if (u.plan) head.appendChild(el('span', { className: 'plan', textContent: u.plan }));
+    if (u.today?.tokens) head.appendChild(el('span', { className: 'today', textContent: `hoy ${fmtTokens(u.today.tokens)}`, title: [u.today.prompts != null && `${u.today.prompts} prompts`, u.today.sessions != null && `${u.today.sessions} sesiones`].filter(Boolean).join(' · ') }));
+    card.appendChild(head);
+    if (u.status !== 'ok' && (u.statusText || u.help)) {
+      const st = el('div', { className: 'u-status' });
+      if (u.statusText) st.append(u.statusText);
+      if (u.help) {
+        if (u.statusText) st.append(' · ');
+        // `comando` entre comillas invertidas se muestra como código
+        u.help.split(/(`[^`]+`)/).forEach((part) => st.append(part.startsWith('`') ? el('code', { textContent: part.slice(1, -1) }) : part));
+      }
+      card.appendChild(st);
+    }
+    if (u.limits?.length) {
+      card.appendChild(el('div', { className: 'u-sec', textContent: 'Límites' }));
+      for (const l of u.limits) {
+        const pct = Math.max(0, Math.min(1, l.percent || 0));
+        const bar = el('div', { className: `u-bar${pct >= 0.9 ? ' full' : pct >= 0.7 ? ' warn' : ''}` }, el('i', { style: `width:${(pct * 100).toFixed(1)}%` }));
+        card.appendChild(el('div', { className: 'u-limit' },
+          el('span', { textContent: l.label }), el('span', { className: 'pct', textContent: `${Math.round(pct * 100)}%` }),
+          bar, el('span', { className: 'reset', textContent: fmtReset(l.resetsAt) })));
+      }
+    }
+    if (u.days?.some((d) => d.tokens)) {
+      card.appendChild(el('div', { className: 'u-sec', textContent: 'Tokens por día' }));
+      const max = Math.max(...u.days.map((d) => d.tokens || 0), 1);
+      const today = new Date().toLocaleDateString('sv');
+      const days = el('div', { className: 'u-days' });
+      for (const d of u.days.slice(-7)) {
+        const date = new Date(`${d.date}T12:00:00`);
+        days.appendChild(el('div', { className: `d${d.date === today ? ' today' : ''}`, title: `${d.date} · ${fmtTokens(d.tokens)} tokens` },
+          el('i', { style: `height:${Math.max(2, ((d.tokens || 0) / max) * 40)}px` }),
+          el('span', { textContent: d.date === today ? 'hoy' : DAY[date.getDay()] })));
+      }
+      card.appendChild(days);
+    }
+    if (u.models?.length) {
+      card.appendChild(el('div', { className: 'u-sec', textContent: 'Por modelo (7 días)' }));
+      const max = Math.max(...u.models.map((m) => m.tokens || 0), 1);
+      const row = (m) => el('div', { className: 'u-model', title: m.model },
+        el('i', { style: `width:${((m.tokens || 0) / max) * 100}%` }), el('span', { textContent: m.model }), el('span', { className: 'n', textContent: fmtTokens(m.tokens) }));
+      const list = el('div', { className: 'u-models' });
+      u.models.slice(0, 3).forEach((m) => list.appendChild(row(m)));
+      if (u.models.length > 3) {
+        const more = el('details', { className: 'u-more' }, el('summary', { textContent: `${u.models.length - 3} más` }));
+        const rest = el('div', { className: 'u-models' });
+        u.models.slice(3).forEach((m) => rest.appendChild(row(m)));
+        more.appendChild(rest);
+        list.appendChild(more);
+      }
+      card.appendChild(list);
+    }
+    if (u.status === 'no_data' && !u.limits?.length && !u.days?.some((d) => d.tokens)) {
+      card.appendChild(el('div', { className: 'muted', textContent: u.statusText || 'Sin datos de uso' }));
+    }
+    return card;
+  }
+
+  async function loadUsage(force = false) {
+    if (usageLoading) return;
+    usageLoading = true;
+    $('refreshUsage').disabled = true;
+    try {
+      const list = await invoke('get_usage', { force });
+      const box = $('usageList');
+      box.innerHTML = '';
+      if (!list.length) box.appendChild(el('p', { className: 'muted', textContent: 'No hay ningún agente instalado.' }));
+      list.forEach((u) => box.appendChild(usageCard(u)));
+      $('usageUpdated').textContent = `· ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    } catch (err) {
+      $('usageList').innerHTML = '';
+      $('usageList').appendChild(el('p', { className: 'muted', textContent: `No se pudo leer el uso: ${err}` }));
+    }
+    usageLoading = false;
+    $('refreshUsage').disabled = false;
+  }
+  // Solo se consulta con la pestaña a la vista: al abrirla y cada 60 s.
+  function usageVisible(on) {
+    clearInterval(usageTimer);
+    usageTimer = null;
+    if (!on) return;
+    loadUsage();
+    usageTimer = setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
+  }
+  $('tabUsage').addEventListener('click', () => setTab('usage'));
+  $('refreshUsage').addEventListener('click', () => loadUsage(true));
+
   // ---------- Arranque ----------
   applyPanel();
   loadAgents();
   invoke('get_project').then(showProject);
+  if (store.get('leftTab') === 'shell') setLeftTab('shell');
 </script>
 </body>
 </html>
