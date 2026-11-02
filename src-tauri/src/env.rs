@@ -104,8 +104,32 @@ pub fn full_path() -> &'static str {
 /// Variables de entorno para los procesos hijos.
 pub fn child_env() -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().filter(|(k, _)| !k.eq_ignore_ascii_case("PATH")).collect();
-    env.insert("PATH".into(), full_path().into());
+    let mut path = full_path().to_string();
+    // Los procesos que lanza la app (agentes del chat, terminales, paneles) pueden usar `agentes run`.
+    if let Some(l) = LAUNCHER.get() {
+        path = format!("{}{}{}", l.shim_dir.display(), path_sep(), path);
+        env.insert("AGENTES_ADDR".into(), l.addr.clone());
+        env.insert("AGENTES_TOKEN".into(), l.token.clone());
+    }
+    env.insert("PATH".into(), path);
     env
+}
+
+/// Datos del lanzador de agentes (`agentes run`): dónde escucha la app y el token de esta sesión.
+pub struct Launcher {
+    pub addr: String,
+    pub token: String,
+    pub shim_dir: PathBuf,
+}
+
+static LAUNCHER: OnceLock<Launcher> = OnceLock::new();
+
+pub fn set_launcher(l: Launcher) {
+    let _ = LAUNCHER.set(l);
+}
+
+pub fn launcher_ready() -> bool {
+    LAUNCHER.get().is_some()
 }
 
 fn which_in(cmd: &str, path: &str) -> Option<PathBuf> {

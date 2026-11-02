@@ -61,8 +61,9 @@ agentes run --cli codex --worktree codex-uso --branch codex/uso \
 - `agentes status` lista los paneles (id, CLI, worktree, estado, código de
   salida). Así el orquestador sabe sin adivinar quién terminó y quién sigue.
 
-**Cómo llega a la app.** La app escucha en un socket local: un socket Unix
-`0600` en `data_dir()`, y en Windows, una *named pipe*. Solo acepta peticiones
+**Cómo llega a la app.** La app escucha en `127.0.0.1`, en un puerto
+aleatorio. Es igual en macOS, Windows y Linux: no hacen falta socket Unix ni
+*named pipe*. Solo acepta peticiones
 con un **token por sesión**, que la app pasa en el entorno
 (`AGENTES_SOCKET`, `AGENTES_TOKEN`) a los procesos que lanza ella: los agentes
 del chat y la terminal. Un proceso cualquiera del equipo no puede abrir
@@ -103,6 +104,34 @@ el mosaico. Con «Ampliar» ocupa toda la ventana, como el tablero del Consejo.
   que usa el mismo mecanismo.
 - Paneles por proyecto: al cambiar de proyecto, los del anterior siguen en
   marcha y vuelven a verse al volver a él.
+
+### Formas de trabajar (añadido el 02/11/2026)
+
+> Si con otros agentes no existe ese workflow por worktrees, hay que agregarlo
+> desde la app y que se pueda usar. Serían formas de trabajar, y agregaremos
+> más en el futuro.
+
+Una **forma de trabajar** es un conjunto de instrucciones que la app añade al
+mensaje del agente del chat. Se elige en ☰ → **Forma de trabajar** y se
+recuerda por proyecto.
+
+- **Directo** (por defecto): como hoy, el agente responde y trabaja él solo.
+- **Equipo en worktrees**: el workflow de `~/.claude/CLAUDE.md` en versión
+  genérica, para que también lo sigan Codex, OpenCode o Gemini. Pasos:
+  1. Plan escrito y commiteado.
+  2. Carriles con zonas de código disjuntas.
+  3. Un brief por carril, con el problema en palabras del usuario, la zona y
+     lo prohibido, el contrato, la línea base de tests, una puerta con
+     ficheros reales y «si ves otra cosa, párate».
+  4. Lanzar cada carril con `agentes run --worktree …`.
+  5. Supervisar con `agentes status` y `agentes wait`.
+  6. Verificar, sin fiarse del informe.
+  7. Mergear en el orden del contrato y limpiar.
+
+**Extensible:** además de las dos de serie, la app lee
+`data_dir()/workflows/*.md`. Cada archivo lleva una cabecera con `name:` y
+`description:` y, debajo, las instrucciones. Añadir una forma nueva es soltar
+un archivo; no hay que tocar código.
 
 ### Lo que no se puede mostrar
 
