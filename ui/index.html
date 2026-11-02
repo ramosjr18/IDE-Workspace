@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat de agentes</title>
+<link rel="stylesheet" href="vendor/xterm.css">
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
+<script src="vendor/monaco/vs/loader.js"></script>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --border: #e2e2dd; --me: #2f5bd3; --me-text: #fff; --bot: #ffffff; --error: #b3261e;
+    --ok: #1e7a3a; --warn: #a15c00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --panel: #1f1f1d; --text: #ecece8; --muted: #9a9a94;
+      --border: #33332f; --me: #4a74e8; --me-text: #fff; --bot: #262624; --error: #ff8a80;
+      --ok: #6fd28f; --warn: #f0b45a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .menu-btn { font-size: 18px; padding: 4px 6px; }
+  .menu-btn .codicon { font-size: 18px; }
+  .context { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .context .muted { font-weight: 400; }
+  #drawerBackdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); z-index: 20; }
+  #drawer {
+    position: fixed; top: 0; left: 0; bottom: 0; width: min(320px, 85vw); z-index: 21;
+    background: var(--panel); border-right: 1px solid var(--border); box-shadow: 4px 0 24px rgba(0, 0, 0, .25);
+    display: flex; flex-direction: column; overflow: hidden; animation: slideIn .15s ease-out;
+  }
+  #drawer[hidden], #drawerBackdrop[hidden] { display: none; }
+  @keyframes slideIn { from { transform: translateX(-100%); } to { transform: none; } }
+  #drawer section { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+  #drawer section.grow { flex: 1; min-height: 0; }
+  #drawer h3 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  #drawer .item { display: flex; align-items: center; gap: 8px; text-align: left; width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #drawer .item span { overflow: hidden; text-overflow: ellipsis; }
+  #drawer select { width: 100%; }
+  .agent-line { display: flex; gap: 8px; align-items: center; }
+  .conv-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; margin: 0 -6px; }
+  .conv { text-align: left; border: 0 !important; background: transparent !important; padding: 6px 8px !important; border-radius: 6px !important; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text); }
+  .conv:hover { background: color-mix(in srgb, var(--text) 7%, transparent) !important; }
+  .conv.active { background: color-mix(in srgb, var(--me) 20%, transparent) !important; }
+  .conv small { display: block; color: var(--muted); font-size: 11px; }
+  /* Estilos propios solo fuera del editor, para no alterar los de Monaco */
+  :where(:is(select, input, textarea, button):not(.monaco-editor *, .monaco-diff-editor *)) {
+    font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+  }
+  :where(button:not(.monaco-editor *, .monaco-diff-editor *)) { cursor: pointer; background: var(--panel); }
+  button:disabled { opacity: .6; cursor: default; }
+  button.primary { background: var(--me); color: var(--me-text); border-color: var(--me); }
+  .pill { font-size: 13px; padding: 2px 10px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .pill.ready { color: var(--ok); }
+  .pill.login, .pill.missing { color: var(--warn); }
+  .pill.checking { color: var(--muted); }
+  #layout { flex: 1; display: flex; min-height: 0; }
+  #chat { flex: 1; display: flex; flex-direction: column; min-width: 320px; }
+  #resizer { width: 5px; cursor: col-resize; background: var(--border); flex: none; }
+  #resizer:hover, #resizer.dragging { background: var(--me); }
+  #panel { width: var(--panel-w, 42%); min-width: 260px; max-width: 75%; display: flex; flex-direction: column; background: var(--panel); flex: none; }
+  body.no-panel #panel, body.no-panel #resizer { display: none; }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); flex: none; }
+  .tab { border: 0; border-radius: 0; background: transparent; padding: 10px 14px; color: var(--muted); border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--me); }
+  .count { font-size: 12px; color: var(--muted); }
+  .view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .view[hidden] { display: none; }
+  .toolbar { display: flex; gap: 8px; align-items: center; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--border); font-size: 13px; flex: none; min-height: 36px; }
+  .toolbar .actions { margin-left: auto; display: flex; gap: 2px; flex: none; }
+  button.icon { border: 0; background: transparent; padding: 3px 5px; border-radius: 5px; color: var(--muted); line-height: 1; }
+  button.icon:hover:not(:disabled) { background: var(--bg); color: var(--text); }
+  button.icon[aria-pressed="true"] { color: var(--me); background: color-mix(in srgb, var(--me) 14%, transparent); }
+  button.icon:disabled { opacity: .35; }
+  .section-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+  .muted { color: var(--muted); }
+  .pad { padding: 12px; margin: 0; }
+  .path-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; min-width: 0; }
+  .stats { font: 12px ui-monospace, Menlo, monospace; white-space: nowrap; }
+  .stats .add { color: var(--git-add); } .stats .del { color: var(--git-del); }
+  .banner { padding: 6px 12px; font-size: 13px; background: color-mix(in srgb, var(--warn) 18%, transparent); border-bottom: 1px solid var(--border); flex: none; }
+  .banner button { padding: 2px 8px; margin-left: 6px; font-size: 12px; }
+
+  /* Explorador estilo VS Code */
+  :root { --git-mod: #895503; --git-add: #007100; --git-del: #ad0707; }
+  @media (prefers-color-scheme: dark) { :root { --git-mod: #e2c08d; --git-add: #73c991; --git-del: #c74e39; } }
+  #tree { flex: 1; overflow: auto; padding: 4px 0; font-size: 13px; }
+  .node { display: flex; align-items: center; gap: 4px; height: 22px; padding-right: 10px; cursor: pointer; white-space: nowrap; user-select: none; }
+  .node:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .node.selected { background: color-mix(in srgb, var(--me) 22%, transparent); }
+  .node .codicon { flex: none; font-size: 16px; color: var(--muted); }
+  .node .twisty { width: 16px; }
+  .node .label { overflow: hidden; text-overflow: ellipsis; }
+  .node .st { margin-left: auto; padding-left: 8px; font-size: 12px; font-weight: 600; }
+  .node.git-M .label, .node.git-M .st, .node.git-R .label, .node.git-R .st { color: var(--git-mod); }
+  .node.git-U .label, .node.git-U .st, .node.git-A .label, .node.git-A .st { color: var(--git-add); }
+  .node.git-D .label, .node.git-D .st { color: var(--git-del); }
+  .node.git-D .label { text-decoration: line-through; }
+  .node.dir-changed .label { color: var(--git-mod); }
+  .node.dir-changed .st { color: var(--git-mod); font-size: 16px; line-height: 1; }
+
+  /* Editor (Monaco) */
+  #editorHost { flex: 1; position: relative; min-height: 0; }
+  #editor, #diffEditor { position: absolute; inset: 0; }
+  #editor[hidden], #diffEditor[hidden] { display: none; }
+  #fileNotice { position: absolute; inset: 0; background: var(--panel); }
+  #fileNotice[hidden] { display: none; }
+  .gm-added { background: var(--git-add); width: 3px !important; margin-left: 3px; }
+  .gm-modified { background: #1b81a8; width: 3px !important; margin-left: 3px; }
+  .gm-deleted { width: 0 !important; height: 0 !important; margin-left: 3px; border-left: 5px solid var(--git-del); border-top: 5px solid transparent; border-bottom: 5px solid transparent; transform: translateY(14px); }
+  #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; user-select: text; }
+  .user { align-self: flex-end; background: var(--me); color: var(--me-text); }
+  .bot { align-self: flex-start; background: var(--bot); border: 1px solid var(--border); }
+  .bot .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+  .error { border-color: var(--error); }
+  .error .body { color: var(--error); }
+  .empty { margin: auto; color: var(--muted); text-align: center; white-space: pre-line; }
+  #form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+  #input { flex: 1; resize: none; height: 56px; }
+  #send { min-width: 100px; }
+  dialog {
+    border: 1px solid var(--border); border-radius: 12px; padding: 0;
+    background: var(--panel); color: var(--text); width: min(560px, calc(100vw - 32px));
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  .dlg-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .dlg-head h2 { font-size: 16px; margin: 0; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .row:last-child { border-bottom: 0; }
+  .row .name { font-weight: 600; }
+  .row .info { margin-right: auto; min-width: 0; display: flex; flex-direction: column; }
+  .row .path { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cli { display: flex; gap: 10px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--border); }
+  .cli p { margin: 0; font-size: 13px; color: var(--muted); }
+  #termDialog { width: min(900px, calc(100vw - 32px)); }
+  #term { height: 440px; padding: 8px; background: #111; }
+  .hint { font-size: 13px; color: var(--muted); padding: 8px 16px 12px; margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <button id="menuBtn" class="icon menu-btn" type="button" title="Menú" aria-label="Abrir menú" aria-expanded="false">☰</button>
+  <span id="context" class="context"></span>
+</header>
+<div id="drawerBackdrop" hidden></div>
+<nav id="drawer" aria-label="Menú" hidden>
+  <section>
+    <h3>Proyecto</h3>
+    <button id="project" type="button" class="item" title="Cambiar de carpeta"><i class="codicon codicon-folder"></i> <span id="projectName">…</span></button>
+  </section>
+  <section>
+    <h3>Agente</h3>
+    <select id="agent" aria-label="Agente"></select>
+    <div class="agent-line">
+      <span id="agentStatus" class="pill checking">Comprobando…</span>
+      <button id="agentAction" type="button" hidden></button>
+    </div>
+    <button id="openAgents" type="button" class="item"><i class="codicon codicon-account"></i> Agentes</button>
+  </section>
+  <section class="grow">
+    <h3>Conversaciones</h3>
+    <button id="reset" type="button" class="item"><i class="codicon codicon-add"></i> Nueva conversación</button>
+    <div id="convs" class="conv-list"></div>
+  </section>
+  <section>
+    <h3>Vista</h3>
+    <button id="togglePanel" type="button" class="item"><i class="codicon codicon-layout-sidebar-right"></i> <span id="togglePanelText">Ocultar panel de archivos</span></button>
+  </section>
+</nav>
+<main id="layout">
+  <section id="chat">
+    <div id="messages"></div>
+    <form id="form">
+      <textarea id="input" placeholder="Escribe… (Enter envía · Shift+Enter salto de línea · ↑ ↓ mensajes anteriores)"></textarea>
+      <button id="send" class="primary" type="submit">Enviar</button>
+    </form>
+  </section>
+  <div id="resizer" title="Arrastra para cambiar el ancho"></div>
+  <aside id="panel">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tabTree" class="tab active">Worktree <span id="treeCount" class="count"></span></button>
+      <button type="button" role="tab" id="tabFile" class="tab">Archivo <span id="fileTabName" class="count"></span></button>
+    </div>
+    <div id="treeView" class="view">
+      <div class="toolbar explorer-head">
+        <span id="explorerTitle" class="section-title"></span>
+        <span id="branch" class="muted"></span>
+        <span class="actions">
+          <button type="button" class="icon" id="onlyChanges" title="Mostrar solo los archivos con cambios" aria-pressed="false"><i class="codicon codicon-diff"></i></button>
+          <button type="button" class="icon" id="refreshTree" title="Actualizar"><i class="codicon codicon-refresh"></i></button>
+          <button type="button" class="icon" id="collapseAll" title="Contraer carpetas"><i class="codicon codicon-collapse-all"></i></button>
+        </span>
+      </div>
+      <div id="tree"></div>
+    </div>
+    <div id="fileView" class="view" hidden>
+      <div class="toolbar">
+        <span id="filePath" class="path-label"></span>
+        <span id="fileStats" class="stats"></span>
+        <span class="actions">
+          <button type="button" class="icon" id="diffToggle" title="Ver cambios respecto al último commit" aria-pressed="false"><i class="codicon codicon-git-compare"></i></button>
+          <button type="button" class="icon" id="saveFile" title="Guardar (⌘S / Ctrl+S)" disabled><i class="codicon codicon-save"></i></button>
+          <button type="button" class="icon" id="follow" title="Seguir: mostrar el archivo que está editando el agente" aria-pressed="true"><i class="codicon codicon-eye"></i></button>
+        </span>
+      </div>
+      <div id="diskBanner" class="banner" hidden>El archivo ha cambiado en disco y tienes cambios sin guardar. <button type="button" id="reloadFromDisk">Recargar del disco</button></div>
+      <div id="editorHost">
+        <div id="editor"></div>
+        <div id="diffEditor" hidden></div>
+        <p id="fileNotice" class="muted pad">Aquí verás el archivo que se está editando. También puedes abrir uno desde Worktree.</p>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<dialog id="agentsDialog">
+  <div class="dlg-head"><h2>Agentes</h2><button type="button" data-close>Cerrar</button></div>
+  <div id="agentList"></div>
+  <p class="hint">Se usan las CLIs y las sesiones de este ordenador. «Instalar» e «Iniciar sesión» abren un terminal aquí mismo.</p>
+  <div class="cli">
+    <button id="installCli" type="button">Instalar comando «agentes»</button>
+    <p id="cliResult">Para abrir la app desde la terminal dentro de un repo, como <code>claude</code> o <code>code .</code></p>
+  </div>
+</dialog>
+
+<dialog id="termDialog">
+  <div class="dlg-head"><h2 id="termTitle">Terminal</h2><button type="button" data-close>Cerrar</button></div>
+  <div id="term"></div>
+  <p class="hint">Si se abre el navegador para iniciar sesión, termina allí y vuelve. Al cerrar, se comprueba de nuevo el estado.</p>
+</dialog>
+
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+  const openUrl = (url) => window.__TAURI__.opener.openUrl(url);
+  const pickFolder = (defaultPath) => window.__TAURI__.dialog.open({ directory: true, defaultPath });
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  };
+  const STATUS = {
+    ready: { text: 'Listo', action: 'Cuenta', act: 'login' },
+    login: { text: 'Sin sesión', action: 'Iniciar sesión', act: 'login' },
+    missing: { text: 'No instalado', action: 'Instalar', act: 'install' },
+  };
+  let agents = [];
+  let project = null; // { path, name }: carpeta donde trabajan los agentes
+  let conversationId = null;
+  const convKey = () => `conversationId:${project.path}`;
+
+  document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
+
+  // ---------- Mensajes ----------
+  function showEmpty(text) {
+    $('messages').innerHTML = '';
+    if (!text) return;
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = text;
+    $('messages').appendChild(p);
+  }
+
+  function addMessage(role, text, agentName, isError) {
+    const empty = document.querySelector('.empty');
+    if (empty) empty.remove();
+    const div = document.createElement('div');
+    div.className = `msg ${role === 'user' ? 'user' : 'bot'}${isError ? ' error' : ''}`;
+    if (role !== 'user') {
+      const who = document.createElement('div');
+      who.className = 'who';
+      who.textContent = agentName;
+      div.appendChild(who);
+    }
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.textContent = text;
+    div.appendChild(body);
+    $('messages').appendChild(div);
+    $('messages').scrollTop = $('messages').scrollHeight;
+  }
+
+  // ---------- Conversaciones (caché en disco, compartida por todos los agentes) ----------
+  async function loadConversation(id) {
+    conversationId = id || null;
+    store.set(convKey(), conversationId || '');
+    if (!id) return showEmpty(`Los agentes trabajan en ${project.path}\n\nElige un agente y escribe. Puedes cambiar de agente cuando quieras: todos ven la misma conversación.`);
+    try {
+      const conv = await invoke('get_conversation', { id });
+      showEmpty('');
+      for (const m of conv.messages) addMessage(m.role, m.text, m.agentName);
+    } catch {
+      loadConversation(null);
+    }
+  }
+
+  async function loadConversationList() {
+    const list = await invoke('list_conversations');
+    $('convs').innerHTML = '';
+    if (!list.length) {
+      $('convs').appendChild(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Sin conversaciones en este proyecto.' }));
+    }
+    for (const c of list) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `conv${c.id === conversationId ? ' active' : ''}`;
+      b.textContent = c.title;
+      b.title = c.title;
+      const when = document.createElement('small');
+      when.textContent = new Date(c.updatedAt).toLocaleString();
+      b.appendChild(when);
+      b.addEventListener('click', async () => {
+        await loadConversation(c.id);
+        loadConversationList();
+        closeMenu();
+      });
+      $('convs').appendChild(b);
+    }
+  }
+
+  $('reset').addEventListener('click', () => {
+    loadConversation(null);
+    loadConversationList();
+    closeMenu();
+    $('input').focus();
+  });
+
+  // ---------- Menú (hamburguesa) ----------
+  function openMenu() {
+    $('drawer').hidden = false;
+    $('drawerBackdrop').hidden = false;
+    $('menuBtn').setAttribute('aria-expanded', 'true');
+    loadConversationList();
+  }
+  function closeMenu() {
+    $('drawer').hidden = true;
+    $('drawerBackdrop').hidden = true;
+    $('menuBtn').setAttribute('aria-expanded', 'false');
+  }
+  $('menuBtn').addEventListener('click', () => ($('drawer').hidden ? openMenu() : closeMenu()));
+  $('drawerBackdrop').addEventListener('click', closeMenu);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('drawer').hidden && !document.querySelector('dialog[open]')) closeMenu();
+  });
+
+  // Cabecera: «proyecto · agente» para saber siempre dónde se está
+  function renderContext() {
+    const a = agents.find((x) => x.id === $('agent').value);
+    $('context').innerHTML = '';
+    $('context').append(project ? project.name : '…');
+    if (a) $('context').append(Object.assign(document.createElement('span'), { className: 'muted', textContent: ` · ${a.name}` }));
+  }
+
+  // ---------- Mensajes enviados: ↑ / ↓ como en un terminal ----------
+  const sent = (() => { try { return JSON.parse(store.get('sentMessages')) || []; } catch { return []; } })();
+  let sentIndex = sent.length;
+  let draft = '';
+  function remember(text) {
+    if (sent.at(-1) !== text) sent.push(text);
+    if (sent.length > 200) sent.shift();
+    store.set('sentMessages', JSON.stringify(sent));
+    sentIndex = sent.length;
+  }
+  function recall(step) {
+    const next = Math.min(Math.max(sentIndex + step, 0), sent.length);
+    if (!sent.length || next === sentIndex) return false;
+    if (sentIndex === sent.length) draft = $('input').value;
+    sentIndex = next;
+    $('input').value = sentIndex === sent.length ? draft : sent[sentIndex];
+    const end = $('input').value.length;
+    $('input').setSelectionRange(end, end);
+    return true;
+  }
+
+  $('input').addEventListener('keydown', (e) => {
+    const box = $('input');
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('form').requestSubmit(); return; }
+    // Solo navega si el cursor está en la primera línea (↑) o en la última (↓).
+    const before = box.value.slice(0, box.selectionStart);
+    const after = box.value.slice(box.selectionEnd);
+    if (e.key === 'ArrowUp' && !before.includes('\n') && recall(-1)) e.preventDefault();
+    if (e.key === 'ArrowDown' && !after.includes('\n') && recall(1)) e.preventDefault();
+  });
+
+  $('form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const message = $('input').value.trim();
+    if (!message || $('send').disabled) return;
+    const agent = agents.find((a) => a.id === $('agent').value);
+    if (!agent) return;
+    if (agent.status === 'missing') return openAgentTerminal(agent, 'install');
+    remember(message);
+    addMessage('user', message);
+    $('input').value = '';
+    draft = '';
+    $('send').disabled = true;
+    $('send').textContent = 'Pensando…';
+    sending = true;
+    try {
+      const reply = await invoke('chat', { conversationId, agent: agent.id, message });
+      conversationId = reply.conversationId;
+      store.set(convKey(), conversationId);
+      addMessage('assistant', reply.message.text || '(sin respuesta)', reply.message.agentName);
+      loadConversationList();
+    } catch (err) {
+      addMessage('assistant', `${err}\n\n(Este mensaje no se ha guardado en la conversación.)`, agent.name, true);
+    } finally {
+      sending = false;
+      $('send').disabled = false;
+      $('send').textContent = 'Enviar';
+      $('input').focus();
+    }
+  });
+
+  // ---------- Agentes ----------
+  async function loadAgents() {
+    $('agentStatus').className = 'pill checking';
+    $('agentStatus').textContent = 'Comprobando…';
+    agents = await invoke('list_agents');
+    const current = $('agent').value || store.get('agent');
+    $('agent').innerHTML = '';
+    for (const a of agents) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.name;
+      $('agent').appendChild(opt);
+    }
+    if (current && agents.some((a) => a.id === current)) $('agent').value = current;
+    renderSelectedAgent();
+    renderAgentList();
+  }
+
+  function renderSelectedAgent() {
+    const a = agents.find((x) => x.id === $('agent').value);
+    renderContext();
+    if (!a) return;
+    const s = STATUS[a.status];
+    $('agentStatus').className = `pill ${a.status}`;
+    $('agentStatus').textContent = s.text;
+    $('agentAction').hidden = a.status === 'ready';
+    $('agentAction').textContent = s.action;
+    $('agentAction').onclick = () => { closeMenu(); openAgentTerminal(a, s.act); };
+  }
+
+  function renderAgentList() {
+    $('agentList').innerHTML = '';
+    for (const a of agents) {
+      const s = STATUS[a.status];
+      const row = document.createElement('div');
+      row.className = 'row';
+      const info = document.createElement('div');
+      info.className = 'info';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = a.name;
+      info.appendChild(name);
+      const pill = document.createElement('span');
+      pill.className = `pill ${a.status}`;
+      pill.textContent = s.text;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = s.action;
+      if (a.status !== 'ready') btn.className = 'primary';
+      btn.onclick = () => openAgentTerminal(a, s.act);
+      row.append(info, pill, btn);
+      $('agentList').appendChild(row);
+    }
+  }
+
+  $('agent').addEventListener('change', () => {
+    store.set('agent', $('agent').value);
+    renderSelectedAgent();
+  });
+  $('openAgents').addEventListener('click', () => { closeMenu(); $('agentsDialog').showModal(); });
+
+  // ---------- Proyecto (carpeta donde trabajan los agentes) ----------
+  async function showProject(p) {
+    project = p;
+    $('projectName').textContent = p.name;
+    renderContext();
+    $('project').title = `${p.path}\nClic para cambiar de carpeta`;
+    currentFile = null;
+    $('fileTabName').textContent = '';
+    $('filePath').textContent = '';
+    $('fileStats').textContent = '';
+    $('diskBanner').hidden = true;
+    showNotice('Aquí verás el archivo que se está editando. También puedes abrir uno desde Worktree.');
+    if (window.monaco) {
+      $('diffToggle').setAttribute('aria-pressed', 'false');
+      $('editor').hidden = false;
+      $('diffEditor').hidden = true;
+      diffEditor?.setModel(null);
+      editor?.setModel(null);
+      window.monaco.editor.getModels().forEach((m) => m.dispose());
+      files.clear();
+    }
+    loadTree();
+    await loadConversation(store.get(convKey()) || null);
+    await loadConversationList();
+  }
+
+  $('project').addEventListener('click', async () => {
+    closeMenu();
+    const path = await pickFolder(project?.path);
+    if (!path) return;
+    try {
+      showProject(await invoke('open_project', { path }));
+    } catch (err) {
+      addMessage('assistant', String(err), 'Proyecto', true);
+    }
+  });
+
+  $('installCli').addEventListener('click', async () => {
+    try {
+      $('cliResult').textContent = await invoke('install_cli');
+    } catch (err) {
+      $('cliResult').textContent = String(err);
+    }
+  });
+
+  // ---------- Terminal: instalar agentes e iniciar sesión ----------
+  let term, fit, termId = null;
+
+  listen('term-output', (e) => { if (e.payload.id === termId) term.write(e.payload.data); });
+  listen('term-exit', (e) => {
+    if (e.payload.id !== termId) return;
+    term.write(`\r\n\x1b[90m[Terminado con código ${e.payload.code}. Ya puedes cerrar.]\x1b[0m\r\n`);
+    termId = null;
+  });
+
+  function ensureTerm() {
+    if (term) return;
+    term = new Terminal({ fontSize: 13, convertEol: true, cursorBlink: true });
+    fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open($('term'));
+    term.onData((data) => termId && invoke('term_write', { id: termId, data }));
+    term.onResize(({ cols, rows }) => termId && invoke('term_resize', { id: termId, cols, rows }));
+    // Los enlaces (p. ej. de inicio de sesión) se abren en el navegador con un clic
+    term.registerLinkProvider({
+      provideLinks(y, cb) {
+        const line = term.buffer.active.getLine(y - 1)?.translateToString() || '';
+        cb([...line.matchAll(/https?:\/\/\S+/g)].map((m) => ({
+          range: { start: { x: m.index + 1, y }, end: { x: m.index + m[0].length, y } },
+          text: m[0],
+          activate: (_, text) => openUrl(text),
+        })));
+      },
+    });
+  }
+
+  async function openAgentTerminal(agent, action) {
+    $('termTitle').textContent = `${action === 'install' ? 'Instalar' : 'Iniciar sesión en'} ${agent.name}`;
+    $('termDialog').showModal();
+    ensureTerm();
+    term.reset();
+    fit.fit();
+    try {
+      termId = await invoke('term_start', { agent: agent.id, action, cols: term.cols, rows: term.rows });
+    } catch (err) {
+      term.write(`\x1b[31m${err}\x1b[0m\r\n`);
+    }
+    term.focus();
+  }
+
+  $('termDialog').addEventListener('close', () => {
+    if (termId) invoke('term_kill', { id: termId });
+    termId = null;
+    loadAgents();
+  });
+  window.addEventListener('resize', () => term && $('termDialog').open && fit.fit());
+
+  // ---------- Panel derecho: Worktree (explorador) y Archivo (editor de VS Code) ----------
+  let tree = { files: [], status: {}, isGit: false };
+  let openFolders = new Set(JSON.parse(store.get('openFolders') || '[]'));
+  let currentFile = null;
+  let sending = false;
+  const pressed = (id) => $(id).getAttribute('aria-pressed') === 'true';
+  const togglePressed = (id) => $(id).setAttribute('aria-pressed', String(!pressed(id)));
+
+  function setTab(name) {
+    $('tabTree').classList.toggle('active', name === 'tree');
+    $('tabFile').classList.toggle('active', name === 'file');
+    $('treeView').hidden = name !== 'tree';
+    $('fileView').hidden = name !== 'file';
+  }
+  $('tabTree').addEventListener('click', () => setTab('tree'));
+  $('tabFile').addEventListener('click', () => setTab('file'));
+
+  // Mostrar/ocultar y ancho del panel (se recuerdan)
+  const applyPanel = () => {
+    document.body.classList.toggle('no-panel', store.get('panel') === 'off');
+    $('togglePanelText').textContent = store.get('panel') === 'off' ? 'Mostrar panel de archivos' : 'Ocultar panel de archivos';
+    const w = store.get('panelWidth');
+    if (w) document.documentElement.style.setProperty('--panel-w', `${w}px`);
+  };
+  $('togglePanel').addEventListener('click', () => {
+    store.set('panel', store.get('panel') === 'off' ? 'on' : 'off');
+    applyPanel();
+  });
+  $('resizer').addEventListener('pointerdown', (e) => {
+    $('resizer').classList.add('dragging');
+    $('resizer').setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const w = Math.min(Math.max(window.innerWidth - ev.clientX, 260), window.innerWidth * 0.75);
+      document.documentElement.style.setProperty('--panel-w', `${w}px`);
+      store.set('panelWidth', Math.round(w));
+    };
+    const up = () => {
+      $('resizer').classList.remove('dragging');
+      $('resizer').removeEventListener('pointermove', move);
+      $('resizer').removeEventListener('pointerup', up);
+    };
+    $('resizer').addEventListener('pointermove', move);
+    $('resizer').addEventListener('pointerup', up);
+  });
+
+  // ----- Explorador -----
+  const gitLetter = (st) => (st === '?' ? 'U' : st); // VS Code: U = sin seguimiento
+  const ICONS = {
+    md: 'markdown', json: 'json', png: 'file-media', jpg: 'file-media', jpeg: 'file-media', gif: 'file-media', svg: 'file-media',
+    webp: 'file-media', ico: 'file-media', mp4: 'file-media', mov: 'file-media', mp3: 'file-media', wav: 'file-media',
+    zip: 'file-zip', gz: 'file-zip', pdf: 'file-pdf', lock: 'lock', txt: 'file-text',
+    js: 'file-code', mjs: 'file-code', cjs: 'file-code', ts: 'file-code', tsx: 'file-code', jsx: 'file-code', rs: 'file-code',
+    py: 'file-code', go: 'file-code', swift: 'file-code', java: 'file-code', kt: 'file-code', c: 'file-code', h: 'file-code',
+    cpp: 'file-code', cs: 'file-code', rb: 'file-code', php: 'file-code', sh: 'terminal', html: 'file-code', css: 'file-code',
+    scss: 'file-code', vue: 'file-code', svelte: 'file-code', sql: 'database', yml: 'settings', yaml: 'settings', toml: 'settings',
+  };
+  const fileIcon = (name) => (name.startsWith('.') ? 'settings-gear' : ICONS[name.split('.').pop().toLowerCase()] || 'file');
+
+  $('onlyChanges').addEventListener('click', () => { togglePressed('onlyChanges'); renderTree(); });
+  $('refreshTree').addEventListener('click', loadTree);
+  $('collapseAll').addEventListener('click', () => {
+    openFolders.clear();
+    store.set('openFolders', '[]');
+    renderTree();
+  });
+
+  async function loadTree() {
+    try {
+      tree = await invoke('get_tree');
+    } catch {
+      return;
+    }
+    const changes = Object.keys(tree.status).length;
+    $('treeCount').textContent = changes ? `· ${changes}` : '';
+    $('explorerTitle').textContent = project?.name || '';
+    $('branch').innerHTML = '';
+    if (tree.isGit) {
+      $('branch').append(Object.assign(document.createElement('i'), { className: 'codicon codicon-git-branch' }), ` ${tree.branch || '(sin rama)'}`);
+    }
+    $('onlyChanges').hidden = !tree.isGit;
+    renderTree();
+  }
+
+  function buildTree(paths) {
+    const root = { dirs: new Map(), files: [] };
+    for (const p of paths) {
+      const parts = p.split('/');
+      let node = root;
+      for (const dir of parts.slice(0, -1)) {
+        if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
+        node = node.dirs.get(dir);
+      }
+      node.files.push(p);
+    }
+    return root;
+  }
+
+  function renderTree() {
+    const only = pressed('onlyChanges') && tree.isGit;
+    const paths = only ? tree.files.filter((f) => tree.status[f]) : tree.files;
+    const changedDirs = new Set();
+    for (const f of Object.keys(tree.status)) {
+      const parts = f.split('/');
+      for (let i = 1; i < parts.length; i++) changedDirs.add(parts.slice(0, i).join('/'));
+    }
+    const box = $('tree');
+    box.innerHTML = '';
+    if (!paths.length) {
+      box.appendChild(Object.assign(document.createElement('p'), { className: 'muted pad', textContent: only ? 'No hay cambios.' : 'Carpeta vacía.' }));
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    const walk = (node, prefix, depth) => {
+      // Como VS Code: primero carpetas y luego archivos, por orden alfabético
+      for (const name of [...node.dirs.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))) {
+        const full = prefix ? `${prefix}/${name}` : name;
+        const open = only || openFolders.has(full);
+        const row = nodeRow(name, depth, `chevron-${open ? 'down' : 'right'}`, null, changedDirs.has(full) ? '•' : '');
+        if (changedDirs.has(full)) row.classList.add('dir-changed');
+        row.addEventListener('click', () => {
+          openFolders.has(full) ? openFolders.delete(full) : openFolders.add(full);
+          store.set('openFolders', JSON.stringify([...openFolders]));
+          renderTree();
+        });
+        frag.appendChild(row);
+        if (open) walk(node.dirs.get(name), full, depth + 1);
+      }
+      for (const f of node.files.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))) {
+        const name = f.split('/').pop();
+        const st = gitLetter(tree.status[f] || '');
+        const row = nodeRow(name, depth, null, fileIcon(name), st);
+        row.title = st ? `${f} · ${{ M: 'Modificado', U: 'Sin seguimiento', A: 'Añadido', D: 'Borrado', R: 'Renombrado' }[st]}` : f;
+        if (st) row.classList.add(`git-${st}`);
+        if (f === currentFile) row.classList.add('selected');
+        row.addEventListener('click', () => openFile(f, { switchTab: true }));
+        frag.appendChild(row);
+      }
+    };
+    walk(buildTree(paths), '', 0);
+    box.appendChild(frag);
+  }
+
+  function nodeRow(label, depth, chevron, icon, status) {
+    const row = document.createElement('div');
+    row.className = 'node';
+    row.style.paddingLeft = `${8 + depth * 12}px`;
+    const twisty = document.createElement('i');
+    twisty.className = `twisty codicon ${chevron ? `codicon-${chevron}` : ''}`;
+    row.appendChild(twisty);
+    if (icon) row.appendChild(Object.assign(document.createElement('i'), { className: `codicon codicon-${icon}` }));
+    row.appendChild(Object.assign(document.createElement('span'), { className: 'label', textContent: label }));
+    if (status) row.appendChild(Object.assign(document.createElement('span'), { className: 'st', textContent: status }));
+    return row;
+  }
+
+  // ----- Editor (Monaco, el editor de VS Code) -----
+  const monacoReady = new Promise((resolve) => {
+    // Los workers de Monaco se cargan desde un blob; si fallaran, Monaco sigue funcionando sin ellos.
+    window.MonacoEnvironment = {
+      getWorkerUrl() {
+        const base = new URL('vendor/monaco/', location.href).href;
+        const code = `self.MonacoEnvironment={baseUrl:'${base}'};importScripts('${base}vs/base/worker/workerMain.js');`;
+        return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+      },
+    };
+    require.config({ paths: { vs: 'vendor/monaco/vs' } });
+    require(['vs/editor/editor.main'], () => resolve(window.monaco));
+  });
+
+  let editor = null, diffEditor = null, decorations = null;
+  const files = new Map(); // ruta → { savedVersion, viewState, tracked }
+  const dark = matchMedia('(prefers-color-scheme: dark)');
+
+  monacoReady.then((monaco) => {
+    monaco.editor.setTheme(dark.matches ? 'vs-dark' : 'vs');
+    dark.addEventListener('change', () => monaco.editor.setTheme(dark.matches ? 'vs-dark' : 'vs'));
+    const common = { automaticLayout: true, fontSize: 13, scrollBeyondLastLine: false, renderWhitespace: 'selection', smoothScrolling: true };
+    editor = monaco.editor.create($('editor'), { ...common, minimap: { enabled: true }, glyphMargin: false });
+    decorations = editor.createDecorationsCollection();
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveCurrent);
+    editor.onDidChangeModelContent(updateDirty);
+    diffEditor = monaco.editor.createDiffEditor($('diffEditor'), { ...common, originalEditable: false, useInlineViewWhenSpaceIsLimited: true, renderSideBySideInlineBreakpoint: 700 });
+    diffEditor.getModifiedEditor().addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveCurrent);
+    renderTree(); // los iconos (codicons) ya están cargados
+  });
+
+  const modelFor = (monaco, path) => monaco.editor.getModel(monaco.Uri.file(`/${path}`));
+  const isDirty = (path) => {
+    const m = window.monaco && modelFor(window.monaco, path);
+    return Boolean(m && files.get(path) && m.getAlternativeVersionId() !== files.get(path).savedVersion);
+  };
+
+  function updateDirty() {
+    if (!currentFile) return;
+    const dirty = isDirty(currentFile);
+    $('saveFile').disabled = !dirty;
+    $('fileTabName').textContent = `· ${currentFile.split('/').pop()}${dirty ? ' ●' : ''}`;
+  }
+
+  function showNotice(text) {
+    $('fileNotice').textContent = text;
+    $('fileNotice').hidden = false;
+  }
+
+  function setMarks(monaco, view) {
+    const range = (l) => new monaco.Range(l, 1, l, 1);
+    const mark = (cls, color) => (l) => ({
+      range: range(Math.max(l, 1)),
+      options: { linesDecorationsClassName: cls, overviewRuler: { color, position: monaco.editor.OverviewRulerLane.Left }, minimap: { color, position: monaco.editor.MinimapPosition.Gutter } },
+    });
+    decorations.set([
+      ...view.added.map(mark('gm-added', '#587c0c')),
+      ...view.modified.map(mark('gm-modified', '#1b81a8')),
+      ...view.deleted.map(mark('gm-deleted', '#ad0707')),
+    ]);
+    const parts = [];
+    const add = view.added.length + view.modified.length;
+    if (add) parts.push(`<span class="add">+${add}</span>`);
+    if (view.deletedCount) parts.push(`<span class="del">−${view.deletedCount}</span>`);
+    $('fileStats').innerHTML = parts.join(' ');
+  }
+
+  // Abre (o refresca) un archivo en el editor.
+  //   switchTab: cambiar a la pestaña Archivo · refresh: recarga del mismo archivo tras un cambio en disco
+  async function openFile(path, { switchTab = false, refresh = false, force = false } = {}) {
+    const monaco = await monacoReady;
+    if (currentFile && currentFile !== path && editor.getModel()) {
+      files.get(currentFile) && (files.get(currentFile).viewState = editor.saveViewState());
+    }
+    const changedFile = currentFile !== path;
+    currentFile = path;
+    $('filePath').textContent = path;
+    $('filePath').title = path;
+    if (switchTab) setTab('file');
+    if (changedFile) renderTree();
+    let view;
+    try {
+      view = await invoke('read_file', { path });
+    } catch (err) {
+      return showNotice(String(err));
+    }
+    if (currentFile !== path) return; // se abrió otro mientras tanto
+    if (view.content == null) {
+      $('fileStats').textContent = '';
+      $('saveFile').disabled = true;
+      return showNotice(view.notice);
+    }
+    $('fileNotice').hidden = true;
+    let model = modelFor(monaco, path);
+    let info = files.get(path);
+    if (!model) {
+      model = monaco.editor.createModel(view.content, undefined, monaco.Uri.file(`/${path}`));
+      info = { savedVersion: model.getAlternativeVersionId(), viewState: null };
+      files.set(path, info);
+    } else if (model.getValue() !== view.content) {
+      if (isDirty(path) && !force) {
+        $('diskBanner').hidden = false; // no se pisan cambios sin guardar
+      } else {
+        const state = editor.getModel() === model ? editor.saveViewState() : info.viewState;
+        model.pushEditOperations([], [{ range: model.getFullModelRange(), text: view.content }], () => null);
+        info.savedVersion = model.getAlternativeVersionId();
+        $('diskBanner').hidden = true;
+        if (state && editor.getModel() === model) editor.restoreViewState(state);
+      }
+    }
+    info.tracked = view.tracked;
+    if (editor.getModel() !== model) {
+      editor.setModel(model);
+      if (info.viewState) editor.restoreViewState(info.viewState);
+    }
+    if (!isDirty(path)) $('diskBanner').hidden = true;
+    setMarks(monaco, view);
+    updateDirty();
+    if (pressed('diffToggle')) await showDiff(monaco);
+    // Al abrir un archivo nuevo (no al refrescar), ir al primer cambio como VS Code al seguir un cambio
+    const first = [...view.modified, ...view.added].sort((a, b) => a - b)[0];
+    if (changedFile && !refresh && !info.viewState && first) editor.revealLineInCenter(first);
+    else if (refresh && sending && pressed('follow') && first) editor.revealLineInCenterIfOutsideViewport(Math.max(...view.added, ...view.modified));
+  }
+
+  async function showDiff(monaco) {
+    const on = pressed('diffToggle') && currentFile;
+    $('editor').hidden = Boolean(on);
+    $('diffEditor').hidden = !on;
+    if (!on) return editor.layout();
+    const model = modelFor(monaco, currentFile);
+    const head = files.get(currentFile)?.tracked ? await invoke('read_head', { path: currentFile }) : '';
+    const old = diffEditor.getModel();
+    const original = monaco.editor.createModel(head, model.getLanguageId());
+    diffEditor.setModel({ original, modified: model });
+    if (old?.original) old.original.dispose();
+  }
+
+  $('diffToggle').addEventListener('click', async () => { togglePressed('diffToggle'); showDiff(await monacoReady); });
+  $('follow').addEventListener('click', () => togglePressed('follow'));
+  $('saveFile').addEventListener('click', saveCurrent);
+  $('reloadFromDisk').addEventListener('click', () => currentFile && openFile(currentFile, { refresh: true, force: true }));
+
+  async function saveCurrent() {
+    if (!currentFile || !window.monaco) return;
+    const model = modelFor(window.monaco, currentFile);
+    if (!model) return;
+    try {
+      await invoke('write_file', { path: currentFile, content: model.getValue() });
+      files.get(currentFile).savedVersion = model.getAlternativeVersionId();
+      $('diskBanner').hidden = true;
+      updateDirty();
+      openFile(currentFile, { refresh: true }); // refresca las marcas de git
+    } catch (err) {
+      showNotice(String(err));
+    }
+  }
+
+  // La carpeta del proyecto ha cambiado (lo avisa Rust): refrescar explorador y editor.
+  let treeTimer;
+  listen('fs-changed', (e) => {
+    clearTimeout(treeTimer);
+    treeTimer = setTimeout(loadTree, 400);
+    const changed = e.payload.files;
+    if (!changed.length) return;
+    if (pressed('follow') && sending) {
+      // Mientras un agente trabaja, se muestra el último archivo que ha tocado.
+      openFile(changed[0], { switchTab: true, refresh: changed[0] === currentFile });
+    } else if (currentFile && changed.includes(currentFile)) {
+      openFile(currentFile, { refresh: true });
+    }
+  });
+
+  // ---------- Arranque ----------
+  applyPanel();
+  loadAgents();
+  invoke('get_project').then(showProject);
+</script>
+</body>
+</html>

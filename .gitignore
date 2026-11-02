@@ -29,3 +29,10 @@ coverage/
 # Logs
 *.log
 logs/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Copiado de node_modules al compilar (npm run vendor)
+ui/vendor/
