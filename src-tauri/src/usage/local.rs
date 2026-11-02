@@ -412,3 +412,20 @@ fn opencode_read_only_wal_and_migration() {
     drop(writer);
     let _ = fs::remove_file(path);
 }
+
+#[cfg(test)]
+#[test]
+fn scan_skips_old_files_and_unrelated_extensions() {
+    let root = std::env::temp_dir().join(format!("usage-scan-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(root.join("nested")).unwrap();
+    fs::write(root.join("nested/recent.jsonl"), "{}").unwrap();
+    fs::write(root.join("unrelated.json"), "{}").unwrap();
+    let old = File::create(root.join("old.jsonl")).unwrap();
+    old.set_times(
+        std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(9 * 86400)),
+    )
+    .unwrap();
+    assert_eq!(recent_files(&root), vec![root.join("nested/recent.jsonl")]);
+    drop(old);
+    fs::remove_dir_all(root).unwrap();
+}

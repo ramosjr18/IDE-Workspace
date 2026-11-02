@@ -116,13 +116,21 @@ impl LimitsState {
                 return;
             }
         }
+        // Reserve before awaiting any subprocess or request, including cancellation.
+        self.cache.lock().await.insert(
+            r.id.clone(),
+            CachedProbe {
+                next: now + 300,
+                probe: Probe::failed(Failure::Unavailable),
+            },
+        );
         let deadline = self.deadline(&r.id).await;
         let probe = if deadline > now {
             Probe::failed(Failure::Http(429))
         } else {
             work.await
         };
-        let next = (now + 300).max(self.deadline(&r.id).await);
+        let next = (Utc::now().timestamp() + 300).max(self.deadline(&r.id).await);
         self.cache.lock().await.insert(
             r.id.clone(),
             CachedProbe {
@@ -1045,6 +1053,9 @@ fn copilot_limits(v: &Value) -> Result<Probe, Failure> {
 }
 async fn copilot(state: &LimitsState, transport: &dyn Transport) -> Result<Probe, Failure> {
     let token = copilot_token().await?;
+    if token.0.is_empty() {
+        return Err(Failure::NoSession);
+    }
     let v = state
         .request("copilot", transport, Endpoint::Copilot, &token, vec![])
         .await?;
@@ -1075,5 +1086,103 @@ mod copilot_tests {
         assert!(github_host_token(b"evil.test:\n  oauth_token: never-select").is_none());
         let yaml = b"github.com:\n  user: active\n  users:\n    inactive:\n      oauth_token: wrong-user\n    active:\n      oauth_token: active-user\n";
         assert_eq!(github_host_token(yaml).unwrap().0, "active-user");
+    }
+}
+
+#[cfg(test)]
+mod confidentiality_tests {
+    use super::*;
+    const TOKEN: &str = "sk-test-NO-FILTRAR-123";
+    struct Echo {
+        status: u16,
+    }
+    impl Transport for Echo {
+        fn get<'a>(
+            &'a self,
+            endpoint: Endpoint,
+            _: &'a Secret,
+            _: Vec<(&'static str, String)>,
+        ) -> futures::future::BoxFuture<'a, Result<HttpResponse, Failure>> {
+            Box::pin(async move {
+                assert!([
+                    "https://api.anthropic.com/api/oauth/usage",
+                    "https://opencode.ai/api/go/status",
+                    "https://api.github.com/copilot_internal/user"
+                ]
+                .contains(&endpoint.url()));
+                Ok(HttpResponse {
+                    status: self.status,
+                    retry_after: Some(TOKEN.into()),
+                    body: json!({
+                        "error": TOKEN, "message":TOKEN, "product":TOKEN, "copilot_plan":TOKEN, "planType":TOKEN,
+                        "five_hour":{"utilization":11,"resets_at":TOKEN},
+                        "primary":{"usedPercent":1,"resetsAt":TOKEN},
+                        "access":{"meters":{"week":{"usedMicroCents":"20","limitMicroCents":"100","resetsAt":TOKEN}}},
+                        "quota_reset_date":TOKEN,"quota_snapshots":{"premium_interactions":{"percent_remaining":10}},
+                    }),
+                })
+            })
+        }
+    }
+    #[tokio::test]
+    async fn tokens_never_reach_records_errors_or_backoff() {
+        let path =
+            std::env::temp_dir().join(format!("usage-secrets-{}.json", uuid::Uuid::new_v4()));
+        let state = LimitsState {
+            backoff_file: Some(path.clone()),
+            ..Default::default()
+        };
+        let token = Secret(TOKEN.into());
+        let mut records = vec![];
+        for (id, endpoint) in [
+            ("claude", Endpoint::Claude),
+            ("opencode", Endpoint::OpenCode),
+            ("copilot", Endpoint::Copilot),
+        ] {
+            for status in [200, 302, 400, 401, 403, 429, 500] {
+                let response = state
+                    .request(id, &Echo { status }, endpoint, &token, vec![])
+                    .await;
+                let probe = match response {
+                    Ok(v) => match id {
+                        "claude" => claude_limits(&v),
+                        "opencode" => opencode_limits(&v),
+                        _ => copilot_limits(&v),
+                    }
+                    .unwrap_or_else(Probe::failed),
+                    Err(error) => {
+                        assert!(!error.text().contains(TOKEN));
+                        Probe::failed(error)
+                    }
+                };
+                let mut r = UsageRecord::empty(id, id);
+                probe.apply(&mut r);
+                records.push(r);
+            }
+        }
+        let mut r = UsageRecord::empty("codex", "Codex");
+        let v = Echo { status: 200 }
+            .get(Endpoint::Claude, &token, vec![])
+            .await
+            .ok()
+            .unwrap()
+            .body;
+        codex_limits(&v).apply(&mut r);
+        records.push(r);
+        assert!(!serde_json::to_string(&records).unwrap().contains(TOKEN));
+        for error in [
+            Failure::NoSession,
+            Failure::Expired,
+            Failure::Unavailable,
+            Failure::InvalidResponse,
+            Failure::Http(401),
+            Failure::Http(429),
+        ] {
+            assert!(!error.text().contains(TOKEN));
+        }
+        assert!(!String::from_utf8(std::fs::read(&path).unwrap())
+            .unwrap()
+            .contains(TOKEN));
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -107,17 +107,26 @@ pub async fn get_usage(
     force: bool,
     state: State<'_, UsageState>,
 ) -> Result<Vec<UsageRecord>, String> {
-    let mut cache = state.cache.lock().await;
-    if !force {
-        if let Some((at, records)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(60) {
-                return Ok(records.clone());
+    Ok(state.read(force, collect(&state)).await)
+}
+impl UsageState {
+    async fn read(
+        &self,
+        force: bool,
+        work: impl std::future::Future<Output = Vec<UsageRecord>>,
+    ) -> Vec<UsageRecord> {
+        let mut cache = self.cache.lock().await;
+        if !force {
+            if let Some((at, records)) = cache.as_ref() {
+                if at.elapsed() < Duration::from_secs(60) {
+                    return records.clone();
+                }
             }
         }
+        let records = work.await;
+        *cache = Some((Instant::now(), records.clone()));
+        records
     }
-    let records = collect(&state).await;
-    *cache = Some((Instant::now(), records.clone()));
-    Ok(records)
 }
 
 #[cfg(test)]
@@ -130,5 +139,48 @@ mod tests {
         assert!(value.get("updatedAt").is_some());
         assert!(value["today"]["prompts"].is_null());
         assert_eq!(value.as_object().unwrap().len(), 11);
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn cache_force_and_expiry() {
+    let state = UsageState::default();
+    state
+        .read(false, async {
+            vec![UsageRecord::empty("claude", "Claude")]
+        })
+        .await;
+    let cached = state
+        .read(false, async { panic!("fresh cache must skip collection") })
+        .await;
+    assert_eq!(cached[0].id, "claude");
+    let forced = state
+        .read(true, async { vec![UsageRecord::empty("codex", "Codex")] })
+        .await;
+    assert_eq!(forced[0].id, "codex");
+    state.cache.lock().await.as_mut().unwrap().0 = Instant::now() - Duration::from_secs(61);
+    assert!(state.read(false, async { vec![] }).await.is_empty());
+}
+
+/// Opt-in acceptance gate: reads real CLI data and may run Claude to renew its own session.
+#[cfg(test)]
+#[tokio::test]
+#[ignore]
+async fn real_usage_dump() {
+    let records = collect(&UsageState::default()).await;
+    println!("{}", serde_json::to_string_pretty(&records).unwrap());
+    for id in ["claude", "codex", "opencode"] {
+        let r = records
+            .iter()
+            .find(|r| r.id == id)
+            .expect("required CLI must be installed");
+        assert!(
+            r.today.tokens > 0 || !r.days.is_empty(),
+            "{id}: missing local usage"
+        );
+        if id != "opencode" {
+            assert!(!r.limits.is_empty(), "{id}: missing limits");
+        }
     }
 }
