@@ -66,21 +66,35 @@ fn cancel_chat(running: State<'_, Running>, request_id: String) {
 }
 
 /// Carpeta del proyecto de esta ventana.
-struct CurrentProject(Mutex<PathBuf>);
+/// `None` hasta que se elige una carpeta en la pantalla de inicio.
+struct CurrentProject(Mutex<Option<PathBuf>>);
+
+const NO_PROJECT: &str = "Sin proyecto";
 
 impl CurrentProject {
-    fn get(&self) -> PathBuf {
-        self.0.lock().unwrap().clone()
+    fn get(&self) -> Result<PathBuf, String> {
+        self.0.lock().unwrap().clone().ok_or_else(|| NO_PROJECT.into())
+    }
+    fn key(&self) -> Option<String> {
+        self.0.lock().unwrap().as_ref().map(|p| p.to_string_lossy().to_string())
     }
 }
 
-fn set_title(window: &WebviewWindow, project: &project::Project) {
-    let _ = window.set_title(&format!("{} — Chat de agentes", project.name));
+fn set_title(window: &WebviewWindow, project: Option<&project::Project>) {
+    let _ = window.set_title(&match project {
+        Some(p) => format!("{} — Chat de agentes", p.name),
+        None => "Chat de agentes".into(),
+    });
 }
 
 #[tauri::command]
-fn get_project(current: State<'_, CurrentProject>) -> project::Project {
-    project::Project::from_path(&current.get())
+fn get_project(current: State<'_, CurrentProject>) -> Option<project::Project> {
+    current.get().ok().map(|p| project::Project::from_path(&p))
+}
+
+#[tauri::command]
+fn recent_projects() -> Vec<project::Project> {
+    project::recent()
 }
 
 /// Cambia de proyecto (desde «Abrir carpeta…»).
@@ -97,23 +111,23 @@ fn open_project(
         return Err(format!("La carpeta no existe: {path}"));
     }
     let dir = dir.canonicalize().unwrap_or(dir);
-    *current.0.lock().unwrap() = dir.clone();
+    *current.0.lock().unwrap() = Some(dir.clone());
     project::remember(&dir);
     let _ = watcher.watch(app, dir.clone());
     let p = project::Project::from_path(&dir);
-    set_title(&window, &p);
+    set_title(&window, Some(&p));
     Ok(p)
 }
 
 #[tauri::command]
 async fn get_tree(current: State<'_, CurrentProject>) -> Result<workspace::Tree, String> {
-    let root = current.get();
+    let root = current.get()?;
     tauri::async_runtime::spawn_blocking(move || workspace::tree(&root)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn read_file(current: State<'_, CurrentProject>, path: String) -> Result<workspace::FileView, String> {
-    let root = current.get();
+    let root = current.get()?;
     tauri::async_runtime::spawn_blocking(move || workspace::read(&root, &path, workspace::is_git(&root)))
         .await
         .map_err(|e| e.to_string())?
@@ -121,13 +135,13 @@ async fn read_file(current: State<'_, CurrentProject>, path: String) -> Result<w
 
 #[tauri::command]
 async fn read_head(current: State<'_, CurrentProject>, path: String) -> Result<String, String> {
-    let root = current.get();
+    let root = current.get()?;
     tauri::async_runtime::spawn_blocking(move || workspace::head(&root, &path)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 fn write_file(current: State<'_, CurrentProject>, path: String, content: String) -> Result<(), String> {
-    workspace::write(&current.get(), &path, &content)
+    workspace::write(&current.get()?, &path, &content)
 }
 
 #[tauri::command]
@@ -166,7 +180,7 @@ async fn chat(
     if message.trim().is_empty() {
         return Err("Mensaje vacío".into());
     }
-    let cwd = current.get();
+    let cwd = current.get()?;
     if !cwd.is_dir() {
         return Err(format!("La carpeta del proyecto ya no existe: {}", cwd.display()));
     }
@@ -238,7 +252,7 @@ fn council_context(conversation_id: Option<String>) -> String {
 
 #[tauri::command]
 fn council_list(current: State<'_, CurrentProject>) -> Vec<council::Summary> {
-    council::list(&current.get().to_string_lossy())
+    current.key().map(|k| council::list(&k)).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -270,7 +284,7 @@ fn council_start(
 ) -> Result<council::Council, String> {
     let members = members.into_iter().map(|m| council::NewMember { agent: m.agent, role: m.role }).collect();
     let judge = council::Judge { enabled: judge_enabled, pool: judge_pool, max_rounds: judge_max_rounds.min(5), used_rounds: 0 };
-    let c = council::create(&current.get(), conversation_id, topic, output, context, members, moderator, judge)?;
+    let c = council::create(&current.get()?, conversation_id, topic, output, context, members, moderator, judge)?;
     council::launch(app, runs.inner().clone(), c.clone(), council::Plan::Full)?;
     Ok(c)
 }
@@ -354,7 +368,7 @@ fn council_approve(app: AppHandle, id: String, document: String) -> Result<Appro
 
 #[tauri::command]
 fn list_conversations(current: State<'_, CurrentProject>) -> Vec<store::Summary> {
-    store::list(&current.get().to_string_lossy())
+    current.key().map(|k| store::list(&k)).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -381,6 +395,15 @@ fn term_start(
     terms.start(app, term::Job { command, file, args, cwd: env::home() }, cols, rows)
 }
 
+/// Shell interactiva de la pestaña Terminal, en la carpeta del proyecto (o en la de usuario si no hay).
+#[tauri::command]
+fn term_shell(app: AppHandle, terms: State<'_, term::Terminals>, current: State<'_, CurrentProject>, cols: u16, rows: u16) -> Result<u32, String> {
+    let cwd = current.get().unwrap_or_else(|_| env::home());
+    let (file, args) = env::interactive_shell();
+    let command = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    terms.start(app, term::Job { command, file, args, cwd }, cols, rows)
+}
+
 #[tauri::command]
 fn term_write(terms: State<'_, term::Terminals>, id: u32, data: String) {
     terms.write(id, &data)
@@ -402,7 +425,9 @@ pub fn run() {
         env::full_path();
     });
     let initial = project::initial();
-    project::remember(&initial);
+    if let Some(dir) = &initial {
+        project::remember(dir);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -414,13 +439,16 @@ pub fn run() {
         .manage(workspace::Watcher::default())
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
-                set_title(&window, &project::Project::from_path(&initial));
+                set_title(&window, initial.as_deref().map(project::Project::from_path).as_ref());
             }
-            let _ = app.state::<workspace::Watcher>().watch(app.handle().clone(), initial.clone());
+            if let Some(dir) = initial.clone() {
+                let _ = app.state::<workspace::Watcher>().watch(app.handle().clone(), dir);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_project,
+            recent_projects,
             open_project,
             install_cli,
             get_tree,
@@ -442,6 +470,7 @@ pub fn run() {
             list_conversations,
             get_conversation,
             term_start,
+            term_shell,
             term_write,
             term_resize,
             term_kill

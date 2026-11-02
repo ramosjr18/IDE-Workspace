@@ -164,3 +164,17 @@ pub fn strip_ansi(s: &str) -> String {
     }
     out
 }
+
+/// Shell interactiva del usuario para la pestaña Terminal: `$SHELL -l` en macOS/Linux; PowerShell (o cmd) en Windows.
+pub fn interactive_shell() -> (PathBuf, Vec<String>) {
+    if IS_WIN {
+        for sh in ["pwsh", "powershell"] {
+            if let Some(p) = which(sh) {
+                return (p, vec!["-NoLogo".into()]);
+            }
+        }
+        return (PathBuf::from(std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())), Vec::new());
+    }
+    let shell = std::env::var("SHELL").ok().filter(|s| Path::new(s).is_file()).unwrap_or_else(|| "/bin/bash".into());
+    (PathBuf::from(shell), vec!["-l".into()])
+}
