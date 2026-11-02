@@ -134,6 +134,13 @@ impl Stats {
 }
 
 pub(super) fn collect(r: &mut UsageRecord) {
+    if r.id == "codex" {
+        codex(
+            &recent_files(&codex_dir().join("sessions")),
+            Local::now().date_naive(),
+        )
+        .apply(r);
+    }
     if r.id == "claude" {
         claude(
             &recent_files(&claude_dir().join("projects")),
@@ -204,4 +211,82 @@ mod tests {
         assert_eq!(r.days.len(), 7);
         assert_eq!(r.days.iter().map(|d| d.tokens).sum::<u64>(), 155);
     }
+}
+pub(super) fn codex_dir() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::env::home().join(".codex"))
+}
+fn codex(files: &[PathBuf], today: NaiveDate) -> Stats {
+    let mut stats = Stats::new(today);
+    for path in files {
+        if !path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
+        {
+            continue;
+        }
+        let mut model = "codex".to_string();
+        let mut previous = 0;
+        let mut last_without_total = None;
+        lines(path, |_, v| {
+            let p = &v["payload"];
+            if v["type"] == "turn_context" {
+                if let Some(m) = p["model"].as_str().or(p["model_slug"].as_str()) {
+                    model = m.into();
+                }
+            }
+            let p = if v["type"] == "response_item" {
+                p.get("payload").unwrap_or(p)
+            } else {
+                p
+            };
+            if p["type"] != "token_count" {
+                return;
+            }
+            let info = &p["info"];
+            let usage_total = |u: &Value| {
+                u["total_tokens"]
+                    .as_u64()
+                    .unwrap_or_else(|| num(&u["input_tokens"]) + num(&u["output_tokens"]))
+            };
+            let tokens = if info["total_token_usage"].is_object() {
+                let total = usage_total(&info["total_token_usage"]);
+                let delta = if total >= previous {
+                    total - previous
+                } else {
+                    usage_total(&info["last_token_usage"])
+                };
+                previous = total;
+                delta
+            } else {
+                let fingerprint = (v["timestamp"].clone(), info["last_token_usage"].clone());
+                if last_without_total.as_ref() == Some(&fingerprint) {
+                    return;
+                }
+                last_without_total = Some(fingerprint);
+                usage_total(&info["last_token_usage"])
+            };
+            stats.add(
+                day(&v["timestamp"]),
+                tokens,
+                &model,
+                path.to_str().unwrap_or("session"),
+            );
+        });
+    }
+    stats
+}
+
+#[cfg(test)]
+#[test]
+fn codex_fixture() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/usage/rollout-codex.jsonl");
+    let mut r = UsageRecord::empty("codex", "Codex");
+    codex(&[path], NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()).apply(&mut r);
+    assert_eq!(r.today.tokens, 200);
+    assert_eq!(r.today.prompts, Some(3));
+    assert_eq!(r.models[0].tokens, 150);
+    assert_eq!(r.models[1].tokens, 50);
 }
