@@ -96,6 +96,36 @@
   .start .recent button:last-child { border-bottom: 0; }
   .start .recent button:hover { background: color-mix(in srgb, var(--me) 10%, var(--panel)); }
   .start .recent .p { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Vista Agentes: terminales en mosaico */
+  #mosaic { flex: 1; min-height: 0; display: grid; gap: 6px; padding: 6px; background: var(--bg); }
+  #mosaic .m-empty { margin: auto; max-width: 520px; color: var(--muted); text-align: center; font-size: 14px; padding: 16px; }
+  #mosaic .m-empty code { font: 12px ui-monospace, Menlo, monospace; }
+  .m-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #111; }
+  .m-pane.running { border-color: color-mix(in srgb, var(--me) 45%, var(--border)); }
+  .m-pane.error { border-color: color-mix(in srgb, var(--error) 55%, var(--border)); }
+  #mosaic.has-max .m-pane:not(.max) { display: none; }
+  #mosaic.has-max { grid-template-columns: 1fr !important; grid-template-rows: 1fr !important; }
+  #mosaic.has-max .m-pane.max { grid-row: auto !important; }
+  .m-head { display: flex; align-items: center; gap: 8px; padding: 3px 4px 3px 10px; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 12.5px; min-width: 0; flex: none; }
+  .m-head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .m-pane.running .dot { background: var(--me); animation: pulse 1.6s ease-in-out infinite; }
+  .m-pane.done .dot { background: var(--ok); }
+  .m-pane.error .dot { background: var(--error); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .m-head .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-head .sub { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; font: 11.5px ui-monospace, Menlo, monospace; }
+  .m-head .state { color: var(--muted); white-space: nowrap; font: 11.5px ui-monospace, Menlo, monospace; }
+  .m-head button.icon { padding: 2px 5px; border: 0; background: transparent; color: var(--muted); }
+  .m-head button.icon:hover { color: var(--text); }
+  .m-body { flex: 1; min-height: 0; padding: 4px 6px; }
+  #launchDialog .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  #launchDialog label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
+  #launchDialog label span.muted { font-weight: 400; }
+  #launchDialog textarea { min-height: 140px; font: 12.5px ui-monospace, Menlo, monospace; resize: vertical; }
+  #launchDialog .body { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow: auto; }
+  #launchDialog .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
+  #launchError { color: var(--error); font-size: 13px; margin: 0; }
+  #workflowDesc { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
   /* Uso de cada CLI */
   #usageView .usage-list { flex: 1; overflow-y: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-content: start; }
   .u-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--bg); min-width: 0; }
@@ -340,6 +370,11 @@
     </div>
     <button id="openAgents" type="button" class="item"><i class="codicon codicon-account"></i> Agentes</button>
   </section>
+  <section class="needs-project">
+    <h3>Forma de trabajar</h3>
+    <select id="workflow" aria-label="Forma de trabajar"></select>
+    <p id="workflowDesc"></p>
+  </section>
   <section class="grow needs-project">
     <h3>Conversaciones</h3>
     <button id="reset" type="button" class="item"><i class="codicon codicon-add"></i> Nueva conversación</button>
@@ -376,6 +411,18 @@
       <button type="button" role="tab" id="tabFile" class="tab needs-project">Archivo <span id="fileTabName" class="count"></span></button>
       <button type="button" role="tab" id="tabCouncil" class="tab needs-project">Consejo <span id="councilTabState" class="count"></span></button>
       <button type="button" role="tab" id="tabUsage" class="tab">Uso</button>
+      <button type="button" role="tab" id="tabAgents" class="tab needs-project">Agentes <span id="agentsCount" class="count"></span></button>
+    </div>
+    <div id="agentsView" class="view" hidden>
+      <div class="toolbar">
+        <span class="section-title">Agentes</span>
+        <span id="agentsSummary" class="muted"></span>
+        <span class="actions">
+          <button type="button" class="icon" id="launchPane" title="Lanzar un agente en un worktree"><i class="codicon codicon-add"></i></button>
+          <button type="button" class="icon" id="widenAgents" title="Ampliar (oculta el chat)" aria-pressed="false"><i class="codicon codicon-screen-full"></i></button>
+        </span>
+      </div>
+      <div id="mosaic"></div>
     </div>
     <div id="usageView" class="view" hidden>
       <div class="toolbar">
@@ -473,6 +520,24 @@
       <p class="step-error" id="cError" hidden></p>
     </div>
     <div class="dlg-foot"><button type="submit" class="primary" id="cLaunch">Convocar consejo</button></div>
+  </form>
+</dialog>
+
+<dialog id="launchDialog">
+  <form method="dialog" id="launchForm">
+    <div class="dlg-head"><h2>Lanzar un agente</h2><button type="button" data-close>Cancelar</button></div>
+    <div class="body">
+      <div class="grid2">
+        <label>CLI <select id="lCli"></select></label>
+        <label>Nombre <span class="muted">(opcional)</span><input id="lName" placeholder="Backend de uso"></label>
+        <label>Worktree <span class="muted">.claude/worktrees/…</span><input id="lWorktree" placeholder="codex-uso" pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]*"></label>
+        <label>Rama <span class="muted">(por defecto agentes/&lt;worktree&gt;)</span><input id="lBranch" placeholder="codex/uso"></label>
+      </div>
+      <label>Argumentos <span class="muted">{brief} se sustituye por el brief; si no aparece, el brief va por la entrada estándar</span><input id="lArgs" spellcheck="false"></label>
+      <label>Brief <textarea id="lBrief" placeholder="Qué tiene que hacer, su zona, qué no tocar, el contrato, los tests…"></textarea></label>
+      <p id="launchError" hidden></p>
+    </div>
+    <div class="dlg-foot"><button type="submit" class="primary" id="lGo">Lanzar</button></div>
   </form>
 </dialog>
 
@@ -676,7 +741,7 @@
     const bubble = agentBubble(agent.name, true);
     liveRequest = { id: crypto.randomUUID(), bubble };
     try {
-      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message });
+      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message, workflow: $('workflow').value || null });
       conversationId = reply.conversationId;
       store.set(convKey(), conversationId);
       // Si la CLI no dio pasos de texto, se muestra la respuesta final
@@ -1033,6 +1098,8 @@
     if ($('tabUsage').classList.contains('active') && !changed) setTab('tree');
     if (changed || shellId) restartShellIfOpen();
     $('projectName').textContent = p.name;
+    loadWorkflows();
+    loadPanes(true);
     renderContext();
     $('project').title = `${p.path}\nClic para cambiar de carpeta`;
     currentFile = null;
@@ -1142,8 +1209,11 @@
     $('fileView').hidden = name !== 'file';
     $('councilView').hidden = name !== 'council';
     $('usageView').hidden = name !== 'usage';
+    $('tabAgents').classList.toggle('active', name === 'agents');
+    $('agentsView').hidden = name !== 'agents';
     usageVisible(name === 'usage');
-    if (name !== 'council' && document.body.classList.contains('council-wide')) toggleWide(false);
+    if (name === 'agents') requestAnimationFrame(fitPanes);
+    if (name !== 'council' && name !== 'agents' && document.body.classList.contains('council-wide')) toggleWide(false);
   }
   $('tabTree').addEventListener('click', () => setTab('tree'));
   $('tabFile').addEventListener('click', () => setTab('file'));
@@ -1474,6 +1544,8 @@
     const on = force ?? !document.body.classList.contains('council-wide');
     document.body.classList.toggle('council-wide', on);
     $('widenCouncil').setAttribute('aria-pressed', String(on));
+    $('widenAgents').setAttribute('aria-pressed', String(on));
+    requestAnimationFrame(fitPanes);
   }
   $('widenCouncil').addEventListener('click', () => toggleWide());
   $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); });
@@ -1914,6 +1986,206 @@
     if (!$('shellView').hidden) startShell();
   }
   $('shellRestart').addEventListener('click', () => { startShell(); shellTerm.focus(); });
+
+  // ---------- Formas de trabajar ----------
+  let workflows = [];
+  async function loadWorkflows() {
+    workflows = await invoke('list_workflows').catch(() => []);
+    const sel = $('workflow');
+    sel.innerHTML = '';
+    workflows.forEach((w) => sel.appendChild(el('option', { value: w.id, textContent: w.name })));
+    const saved = project && store.get(`workflow:${project.path}`);
+    if (saved && workflows.some((w) => w.id === saved)) sel.value = saved;
+    renderWorkflow();
+  }
+  function renderWorkflow() {
+    const w = workflows.find((x) => x.id === $('workflow').value);
+    $('workflowDesc').textContent = w?.description || '';
+  }
+  $('workflow').addEventListener('change', () => {
+    if (project) store.set(`workflow:${project.path}`, $('workflow').value);
+    renderWorkflow();
+  });
+
+  // ---------- Panel derecho: Agentes (terminales en mosaico) ----------
+  const paneViews = new Map(); // id → { pane, el, term, fit }
+  let paneList = [];
+  const elapsed = (from, to) => {
+    const s = Math.max(0, Math.round(((to ? new Date(to) : new Date()) - new Date(from)) / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    return h ? `${h} h ${m} min` : m ? `${m} min ${ss} s` : `${ss} s`;
+  };
+  const paneState = (p) => p.status === 'running' ? `en marcha · ${elapsed(p.startedAt)}` : p.status === 'done' ? `terminado · ${elapsed(p.startedAt, p.endedAt)}` : `error ${p.exitCode ?? ''} · ${elapsed(p.startedAt, p.endedAt)}`;
+
+  function layoutMosaic() {
+    const m = $('mosaic');
+    const views = [...paneViews.values()];
+    const n = views.length;
+    views.forEach((v, i) => { v.el.style.gridRow = ''; v.el.style.order = String(i); });
+    if (!n) {
+      m.style.gridTemplateColumns = '1fr';
+      m.style.gridTemplateRows = '1fr';
+    } else if (n === 3) {
+      // Uno grande a la izquierda y dos apilados
+      m.style.gridTemplateColumns = '1fr 1fr';
+      m.style.gridTemplateRows = '1fr 1fr';
+      views[0].el.style.gridRow = 'span 2';
+    } else {
+      const cols = n <= 2 ? n : Math.ceil(Math.sqrt(n));
+      const rows = Math.ceil(n / cols);
+      m.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+      m.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+    }
+    m.classList.toggle('has-max', views.some((v) => v.el.classList.contains('max')));
+    let empty = m.querySelector('.m-empty');
+    if (!n && !empty) {
+      empty = el('div', { className: 'm-empty' });
+      empty.append('Aquí aparecen los agentes que trabajan en paralelo, cada uno en su terminal y su worktree. Lánzalos con ',
+        el('b', { textContent: '+' }), ' o pide al agente del chat que reparta el trabajo: con la forma de trabajar «Equipo en worktrees» lo hará con ',
+        el('code', { textContent: 'agentes run' }), '.');
+      m.appendChild(empty);
+    } else if (n && empty) empty.remove();
+    requestAnimationFrame(fitPanes);
+  }
+
+  function fitPanes() {
+    if ($('agentsView').hidden) return;
+    for (const v of paneViews.values()) if (v.el.offsetParent) { try { v.fit.fit(); } catch { /* sin tamaño */ } }
+  }
+
+  function renderPaneHead(v) {
+    const p = v.pane;
+    v.el.className = `m-pane ${p.status}${v.el.classList.contains('max') ? ' max' : ''}`;
+    v.title.textContent = p.name;
+    v.sub.textContent = [p.branch, p.worktree ? `.claude/worktrees/${p.worktree}` : null].filter(Boolean).join(' · ') || p.command;
+    v.sub.title = `${p.command}\n${p.dir}\nLog: ${p.log}`;
+    v.state.textContent = paneState(p);
+    v.stop.hidden = p.status !== 'running';
+  }
+
+  function makePane(p) {
+    const term = new Terminal({ fontSize: 12, fontFamily: TERM_FONT, cursorBlink: true, scrollback: 5000, theme: { background: '#111111' } });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    const body = el('div', { className: 'm-body' });
+    const btn = (icon, title) => el('button', { type: 'button', className: 'icon', title }, el('i', { className: `codicon codicon-${icon}` }));
+    const v = { pane: p, term, fit, title: el('span', { className: 'title' }), sub: el('span', { className: 'sub' }), state: el('span', { className: 'state' }),
+      stop: btn('debug-stop', 'Detener'), max: btn('screen-full', 'Maximizar (doble clic en la cabecera)'), close: btn('close', 'Cerrar el panel') };
+    const head = el('div', { className: 'm-head' }, el('span', { className: 'dot' }), v.title, v.sub, v.state, v.stop, v.max, v.close);
+    v.el = el('div', { className: 'm-pane' }, head, body);
+    const toggleMax = () => { v.el.classList.toggle('max'); layoutMosaic(); };
+    head.addEventListener('dblclick', (e) => { if (!e.target.closest('button')) toggleMax(); });
+    v.max.addEventListener('click', toggleMax);
+    v.stop.addEventListener('click', () => invoke('pane_kill', { id: p.id }));
+    v.close.addEventListener('click', () => {
+      if (v.pane.status === 'running' && !confirm(`«${v.pane.name}» sigue trabajando. ¿Detenerlo y cerrar el panel?`)) return;
+      invoke('pane_close', { id: p.id });
+    });
+    $('mosaic').appendChild(v.el);
+    term.open(body);
+    term.onData((data) => invoke('term_write', { id: p.id, data }));
+    term.onResize(({ cols, rows }) => invoke('term_resize', { id: p.id, cols, rows }));
+    term.registerLinkProvider({
+      provideLinks(y, cb) {
+        const line = term.buffer.active.getLine(y - 1)?.translateToString() || '';
+        cb([...line.matchAll(/https?:\/\/\S+/g)].map((m) => ({
+          range: { start: { x: m.index + 1, y }, end: { x: m.index + m[0].length, y } }, text: m[0], activate: (_, text) => openUrl(text),
+        })));
+      },
+    });
+    new ResizeObserver(() => { if (v.el.offsetParent) { try { fit.fit(); } catch { /* */ } } }).observe(body);
+    paneViews.set(p.id, v);
+    renderPaneHead(v);
+    // Lo que ya escribió antes de abrir la vista
+    invoke('term_replay', { id: p.id }).then((data) => { v.replayed = true; term.write(data); (v.pending || []).forEach((d) => term.write(d)); v.pending = null; });
+    return v;
+  }
+
+  async function loadPanes(reset = false) {
+    if (reset) {
+      for (const v of paneViews.values()) { v.term.dispose(); v.el.remove(); }
+      paneViews.clear();
+    }
+    paneList = project ? await invoke('panes_list').catch(() => []) : [];
+    const ids = new Set(paneList.map((p) => p.id));
+    for (const [id, v] of paneViews) if (!ids.has(id)) { v.term.dispose(); v.el.remove(); paneViews.delete(id); }
+    for (const p of paneList) {
+      const v = paneViews.get(p.id);
+      if (v) { v.pane = p; renderPaneHead(v); } else makePane(p);
+    }
+    const running = paneList.filter((p) => p.status === 'running').length;
+    $('agentsCount').textContent = paneList.length ? `${running}/${paneList.length}` : '';
+    $('agentsSummary').textContent = paneList.length ? `· ${running} en marcha de ${paneList.length}` : '';
+    layoutMosaic();
+  }
+
+  listen('panes-changed', () => {
+    const before = paneViews.size;
+    loadPanes().then(() => { if (paneViews.size > before && !$('agentsView').hidden) fitPanes(); });
+  });
+  listen('term-output', (e) => {
+    const v = paneViews.get(e.payload.id);
+    if (!v) return;
+    if (v.replayed) v.term.write(e.payload.data);
+    else (v.pending ||= []).push(e.payload.data);
+  });
+  setInterval(() => {
+    if ($('agentsView').hidden) return;
+    for (const v of paneViews.values()) if (v.pane.status === 'running') v.state.textContent = paneState(v.pane);
+  }, 1000);
+  $('tabAgents').addEventListener('click', () => setTab('agents'));
+  $('widenAgents').addEventListener('click', () => toggleWide());
+
+  // «+ Lanzar»: argumentos habituales de cada CLI. {brief} = el brief como argumento.
+  const LAUNCH_PRESETS = {
+    codex: 'exec --approve-for-me -',
+    claude: '-p --dangerously-skip-permissions',
+    opencode: 'run --auto {brief}',
+    agy: '-p {brief} --dangerously-skip-permissions',
+    gemini: '--yolo -p {brief}',
+    copilot: '-p {brief} --allow-all-tools',
+  };
+  // Divide los argumentos respetando comillas simples y dobles.
+  const splitArgs = (text) => [...text.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] != null ? m[1].replace(/\\(.)/g, '$1') : m[2] ?? m[3]);
+
+  $('launchPane').addEventListener('click', () => {
+    const sel = $('lCli');
+    const prev = sel.value;
+    sel.innerHTML = '';
+    agents.forEach((a) => sel.appendChild(el('option', { value: a.id, textContent: a.name, disabled: a.status === 'missing' })));
+    sel.value = prev && agents.some((a) => a.id === prev) ? prev : (agents.find((a) => a.status === 'ready') || agents[0])?.id || '';
+    $('lArgs').value = LAUNCH_PRESETS[sel.value] || '';
+    $('launchError').hidden = true;
+    $('launchDialog').showModal();
+  });
+  $('lCli').addEventListener('change', () => { $('lArgs').value = LAUNCH_PRESETS[$('lCli').value] || ''; });
+  $('lWorktree').addEventListener('input', () => { if (!$('lName').dataset.touched) $('lName').placeholder = $('lWorktree').value || 'Backend de uso'; });
+  $('lName').addEventListener('input', () => { $('lName').dataset.touched = '1'; });
+  $('launchForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const brief = $('lBrief').value.trim();
+    let args = splitArgs($('lArgs').value);
+    const inline = args.some((a) => a.includes('{brief}'));
+    if (inline) args = args.map((a) => a.replaceAll('{brief}', brief));
+    $('lGo').disabled = true;
+    try {
+      await invoke('pane_launch', {
+        cli: $('lCli').value, // el id de cada agente es el nombre de su ejecutable
+        name: $('lName').value.trim() || null,
+        worktree: $('lWorktree').value.trim() || null,
+        branch: $('lBranch').value.trim() || null,
+        args,
+        brief: !inline && brief ? brief : null,
+      });
+      $('launchDialog').close();
+      $('lBrief').value = '';
+      setTab('agents');
+    } catch (err) {
+      $('launchError').textContent = String(err);
+      $('launchError').hidden = false;
+    }
+    $('lGo').disabled = false;
+  });
 
   // ---------- Panel derecho: Uso de cada CLI ----------
   let usageTimer = null, usageLoading = false;
