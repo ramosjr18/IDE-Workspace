@@ -204,7 +204,10 @@ mod tests {
     fn claude_fixture() {
         let path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/usage/claude.jsonl");
-        let stats = claude(&[path], NaiveDate::from_ymd_opt(2026, 11, 2).unwrap());
+        let stats = claude(
+            &[path],
+            day(&Value::String("2026-11-02T12:00:00Z".into())).unwrap(),
+        );
         let mut r = UsageRecord::empty("claude", "Claude");
         stats.apply(&mut r);
         assert_eq!(r.today.tokens, 145);
@@ -287,7 +290,11 @@ fn codex_fixture() {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/usage/rollout-codex.jsonl");
     let mut r = UsageRecord::empty("codex", "Codex");
-    codex(&[path], NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()).apply(&mut r);
+    codex(
+        &[path],
+        day(&Value::String("2026-11-02T12:00:00Z".into())).unwrap(),
+    )
+    .apply(&mut r);
     assert_eq!(r.today.tokens, 200);
     assert_eq!(r.today.prompts, Some(3));
     assert_eq!(r.models[0].tokens, 150);
@@ -403,7 +410,11 @@ fn opencode_read_only_wal_and_migration() {
     let conn = open_db(&path).unwrap();
     assert!(conn.execute("DELETE FROM message", []).is_err());
     let mut r = UsageRecord::empty("opencode", "OpenCode");
-    opencode(&path, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()).apply(&mut r);
+    opencode(
+        &path,
+        day(&Value::String("2026-11-02T12:00:00Z".into())).unwrap(),
+    )
+    .apply(&mut r);
     assert_eq!(r.today.tokens, 220);
     assert_eq!(r.today.prompts, Some(2));
     assert_eq!(r.today.sessions, Some(1));
