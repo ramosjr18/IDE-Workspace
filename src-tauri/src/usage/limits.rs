@@ -79,7 +79,7 @@ impl Default for LimitsState {
 }
 impl LimitsState {
     pub(super) async fn collect(&self, r: &mut UsageRecord) {
-        if !["codex", "claude", "opencode"].contains(&r.id.as_str()) {
+        if !["codex", "claude", "opencode", "copilot"].contains(&r.id.as_str()) {
             return;
         }
         let id = r.id.clone();
@@ -90,6 +90,9 @@ impl LimitsState {
                     .await
                     .unwrap_or_else(Probe::failed),
                 "opencode" => opencode(self, &HttpTransport)
+                    .await
+                    .unwrap_or_else(Probe::failed),
+                "copilot" => copilot(self, &HttpTransport)
                     .await
                     .unwrap_or_else(Probe::failed),
                 _ => Probe::default(),
@@ -931,5 +934,146 @@ mod opencode_tests {
         assert_eq!(a.org, "legacy-org");
         drop(conn);
         std::fs::remove_file(path).unwrap();
+    }
+}
+#[derive(serde::Deserialize)]
+struct GhHost {
+    oauth_token: Option<Secret>,
+    user: Option<String>,
+    #[serde(default)]
+    users: HashMap<String, GhUser>,
+}
+#[derive(serde::Deserialize)]
+struct GhUser {
+    oauth_token: Option<Secret>,
+}
+fn github_host_token(raw: &[u8]) -> Option<Secret> {
+    let mut hosts: HashMap<String, GhHost> = serde_yaml::from_slice(raw).ok()?;
+    let host = hosts.remove("github.com")?;
+    host.oauth_token.or_else(|| {
+        host.user
+            .and_then(|u| host.users.into_iter().find(|(k, _)| k == &u))
+            .and_then(|(_, user)| user.oauth_token)
+    })
+}
+async fn copilot_token() -> Result<Secret, Failure> {
+    for key in ["GH_TOKEN", "GITHUB_TOKEN"] {
+        if let Ok(token) = std::env::var(key) {
+            if !token.is_empty() {
+                return Ok(Secret(token));
+            }
+        }
+    }
+    let saved = tauri::async_runtime::spawn_blocking(|| {
+        let config = std::env::var_os("GH_CONFIG_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                dirs::config_dir().map(|p| p.join(if cfg!(windows) { "GitHub CLI" } else { "gh" }))
+            })?;
+        github_host_token(&std::fs::read(config.join("hosts.yml")).ok()?)
+    })
+    .await
+    .ok()
+    .flatten();
+    if let Some(token) = saved {
+        return Ok(token);
+    }
+    let mut cmd = command("gh").map_err(|_| Failure::NoSession)?;
+    // Pin the host even when GH_HOST selects an enterprise instance.
+    cmd.args(["auth", "token", "--hostname", "github.com"])
+        .stdout(Stdio::piped());
+    let output = tokio::time::timeout(Duration::from_secs(10), cmd.output())
+        .await
+        .map_err(|_| Failure::NoSession)?
+        .map_err(|_| Failure::NoSession)?;
+    if !output.status.success() {
+        return Err(Failure::NoSession);
+    }
+    let token = String::from_utf8(output.stdout)
+        .map_err(|_| Failure::NoSession)?
+        .trim()
+        .to_string();
+    if token.is_empty() {
+        return Err(Failure::NoSession);
+    }
+    Ok(Secret(token))
+}
+fn copilot_limits(v: &Value) -> Result<Probe, Failure> {
+    if !v.is_object() {
+        return Err(Failure::InvalidResponse);
+    }
+    let mut probe = Probe {
+        plan: match v["copilot_plan"].as_str() {
+            Some("individual") => Some("individual".into()),
+            _ => plan(&v["copilot_plan"]),
+        },
+        ..Probe::default()
+    };
+    let resets = reset(&v["quota_reset_date_utc"])
+        .or_else(|| reset(&v["quota_reset_date"]))
+        .or_else(|| {
+            v["quota_reset_date"]
+                .as_str()
+                .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|t| t.and_utc().to_rfc3339())
+        });
+    for (key, label) in [
+        ("premium_interactions", "Premium (mensual)"),
+        ("chat", "Chat (mensual)"),
+        ("completions", "Completado (mensual)"),
+    ] {
+        let q = &v["quota_snapshots"][key];
+        if q["unlimited"].as_bool() == Some(true) {
+            continue;
+        }
+        let used = q["percent_remaining"]
+            .as_f64()
+            .map(|p| 1.0 - p / 100.0)
+            .or_else(|| {
+                let total = q["entitlement"].as_f64().filter(|n| *n > 0.0)?;
+                Some(1.0 - q["remaining"].as_f64()? / total)
+            });
+        let Some(percent) = used else { continue };
+        probe.limits.push(UsageLimit {
+            label: label.into(),
+            percent: percent.clamp(0.0, 1.0),
+            resets_at: resets.clone(),
+        });
+    }
+    Ok(probe)
+}
+async fn copilot(state: &LimitsState, transport: &dyn Transport) -> Result<Probe, Failure> {
+    let token = copilot_token().await?;
+    let v = state
+        .request("copilot", transport, Endpoint::Copilot, &token, vec![])
+        .await?;
+    copilot_limits(&v)
+}
+
+#[cfg(test)]
+mod copilot_tests {
+    use super::*;
+    #[test]
+    fn response_and_host_selection() {
+        let v: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/usage/copilot-limits.json"
+        ))
+        .unwrap();
+        let probe = copilot_limits(&v).ok().unwrap();
+        assert_eq!(probe.plan.as_deref(), Some("pro"));
+        assert_eq!(probe.limits.len(), 2);
+        assert!((probe.limits[0].percent - 0.59).abs() < 1e-9);
+        assert_eq!(probe.limits[1].percent, 0.25);
+        assert_eq!(
+            probe.limits[0].resets_at.as_deref(),
+            Some("2030-04-01T00:00:00+00:00")
+        );
+        let yaml =
+            b"evil.test:\n  oauth_token: never-select\ngithub.com:\n  oauth_token: correct-host\n";
+        assert_eq!(github_host_token(yaml).unwrap().0, "correct-host");
+        assert!(github_host_token(b"evil.test:\n  oauth_token: never-select").is_none());
+        let yaml = b"github.com:\n  user: active\n  users:\n    inactive:\n      oauth_token: wrong-user\n    active:\n      oauth_token: active-user\n";
+        assert_eq!(github_host_token(yaml).unwrap().0, "active-user");
     }
 }
