@@ -64,6 +64,15 @@
   }
   :where(button:not(.monaco-editor *, .monaco-diff-editor *)) { cursor: pointer; background: var(--panel); }
   button:disabled { opacity: .6; cursor: default; }
+  /* Desplegables: WebKitGTK los pinta con el tema nativo (fondo claro) aunque la app esté en oscuro. */
+  :root { color-scheme: light dark; }
+  :where(select:not(.monaco-editor *, .monaco-diff-editor *)) {
+    appearance: none; -webkit-appearance: none; background-color: var(--bg); color: var(--text);
+    padding-right: 30px; background-repeat: no-repeat; background-position: right 10px center; background-size: 12px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 6l5 5 5-5' fill='none' stroke='%23888' stroke-width='1.6'/%3E%3C/svg%3E");
+  }
+  select:disabled { opacity: .55; }
+  option { background: var(--panel); color: var(--text); }
   button.primary { background: var(--me); color: var(--me-text); border-color: var(--me); }
   .pill { font-size: 13px; padding: 2px 10px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
   .pill.ready { color: var(--ok); }
@@ -1062,6 +1071,9 @@
   });
 
   // ---------- Terminal: instalar agentes e iniciar sesión ----------
+  // Fuente monoespaciada real: sin ella, WebKitGTK mide mal el ancho de celda (letras separadas).
+  // Las Nerd Fonts van primero para que se vean los iconos de eza, starship…
+  const TERM_FONT = '"JetBrainsMono Nerd Font", "JetBrainsMono NF", "CaskaydiaMono Nerd Font", "MesloLGS NF", "SF Mono", Menlo, Consolas, "Cascadia Mono", "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace';
   let term, fit, termId = null;
 
   listen('term-output', (e) => { if (e.payload.id === termId) term.write(e.payload.data); });
@@ -1073,7 +1085,7 @@
 
   function ensureTerm() {
     if (term) return;
-    term = new Terminal({ fontSize: 13, convertEol: true, cursorBlink: true });
+    term = new Terminal({ fontSize: 13, fontFamily: TERM_FONT, convertEol: true, cursorBlink: true });
     fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open($('term'));
@@ -1851,7 +1863,7 @@
 
   function ensureShellTerm() {
     if (shellTerm) return;
-    shellTerm = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#111111' } });
+    shellTerm = new Terminal({ fontSize: 13, fontFamily: TERM_FONT, cursorBlink: true, theme: { background: '#111111' } });
     shellFit = new FitAddon.FitAddon();
     shellTerm.loadAddon(shellFit);
     shellTerm.open($('shell'));
