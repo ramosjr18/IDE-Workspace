@@ -10,17 +10,58 @@ mod agents;
 mod env;
 mod project;
 mod store;
+mod stream;
 mod term;
 mod workspace;
 
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 #[derive(Default)]
 struct Busy(Mutex<HashSet<String>>);
+
+/// Ejecuciones en curso, para poder detenerlas: id de la petición → aviso de cancelación.
+#[derive(Default)]
+struct Running(Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>);
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StepEvent<'a> {
+    request_id: &'a str,
+    step: &'a stream::Step,
+}
+
+/// Los pasos se guardan con la salida recortada, para que el historial no ocupe demasiado.
+fn steps_for_storage(steps: Vec<stream::Step>) -> Option<Vec<stream::Step>> {
+    if steps.is_empty() {
+        return None;
+    }
+    Some(
+        steps
+            .into_iter()
+            .map(|mut s| {
+                if let Some(o) = &s.output {
+                    let n = o.chars().count();
+                    if n > 2000 {
+                        s.output = Some(format!("…{}", o.chars().skip(n - 2000).collect::<String>()));
+                    }
+                }
+                s
+            })
+            .collect(),
+    )
+}
+
+/// Detiene la respuesta en curso.
+#[tauri::command]
+fn cancel_chat(running: State<'_, Running>, request_id: String) {
+    if let Some(tx) = running.0.lock().unwrap().remove(&request_id) {
+        let _ = tx.send(());
+    }
+}
 
 /// Carpeta del proyecto de esta ventana.
 struct CurrentProject(Mutex<PathBuf>);
@@ -110,8 +151,11 @@ struct ChatReply {
 
 #[tauri::command]
 async fn chat(
+    app: AppHandle,
     busy: State<'_, Busy>,
+    running: State<'_, Running>,
     current: State<'_, CurrentProject>,
+    request_id: String,
     conversation_id: Option<String>,
     agent: String,
     message: String,
@@ -129,21 +173,28 @@ async fn chat(
     if !key.is_empty() && !busy.0.lock().unwrap().insert(key.clone()) {
         return Err("Esta conversación ya está esperando una respuesta".into());
     }
-    let result = agents::run(ag, &agents::build_prompt(ag, &previous, &message), &cwd).await;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    running.0.lock().unwrap().insert(request_id.clone(), tx);
+    let on_step = |step: &stream::Step| {
+        let _ = app.emit("agent-step", StepEvent { request_id: &request_id, step });
+    };
+    let result = agents::run(ag, &agents::build_prompt(ag, &previous, &message), &cwd, on_step, rx).await;
+    running.0.lock().unwrap().remove(&request_id);
     busy.0.lock().unwrap().remove(&key);
-    let output = result?;
+    let result = result?;
     // Solo se guarda el intercambio si el agente respondió bien.
     let conv = store::append(
         conversation_id.as_deref(),
         &cwd.to_string_lossy(),
         vec![
-            store::Message { role: "user".into(), text: message, agent: None, agent_name: None, ts: String::new() },
+            store::Message { role: "user".into(), text: message, agent: None, agent_name: None, ts: String::new(), steps: None },
             store::Message {
                 role: "assistant".into(),
-                text: output,
+                text: result.text,
                 agent: Some(ag.id.into()),
                 agent_name: Some(ag.name.into()),
                 ts: String::new(),
+                steps: steps_for_storage(result.steps),
             },
         ],
     )?;
@@ -205,6 +256,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Busy::default())
+        .manage(Running::default())
         .manage(CurrentProject(Mutex::new(initial.clone())))
         .manage(term::Terminals::default())
         .manage(workspace::Watcher::default())
@@ -225,6 +277,7 @@ pub fn run() {
             write_file,
             list_agents,
             chat,
+            cancel_chat,
             list_conversations,
             get_conversation,
             term_start,
@@ -247,6 +300,7 @@ mod tests {
             agent: agent.map(str::to_lowercase),
             agent_name: agent.map(str::to_string),
             ts: String::new(),
+            steps: None,
         }
     }
 
@@ -346,11 +400,12 @@ mod tests {
         let codex = agents::get("codex").unwrap();
         let claude = agents::get("claude").unwrap();
         let first = "Mi número de la suerte es el 42. Responde solo: anotado.";
-        let r1 = agents::run(codex, &agents::build_prompt(codex, &[], first), &dir).await.unwrap();
+        let never = || tokio::sync::oneshot::channel::<()>().1;
+        let r1 = agents::run(codex, &agents::build_prompt(codex, &[], first), &dir, |s| println!("  paso: {s:?}"), never()).await.unwrap().text;
         println!("Codex: {r1}");
         let history = vec![msg("user", first, None), msg("assistant", &r1, Some("Codex"))];
         let q = "¿Cuál es mi número de la suerte y qué asistente respondió antes? Una frase.";
-        let r2 = agents::run(claude, &agents::build_prompt(claude, &history, q), &dir).await.unwrap();
+        let r2 = agents::run(claude, &agents::build_prompt(claude, &history, q), &dir, |s| println!("  paso: {s:?}"), never()).await.unwrap().text;
         println!("Claude: {r2}");
         assert!(r2.contains("42") && r2.contains("Codex"));
     }

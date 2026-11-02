@@ -1,0 +1,664 @@
+//! Traduce la salida estructurada (JSON por líneas) de cada CLI a pasos comunes que el chat
+//! muestra en vivo: comandos, archivos leídos/editados, búsquedas, tareas, texto…
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
+
+/// Formato de salida de cada CLI.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Format {
+    /// `claude -p --output-format stream-json --verbose`
+    Claude,
+    /// `codex exec --json`
+    Codex,
+    /// `opencode run --format json`
+    OpenCode,
+    /// `agy --output-format stream-json`
+    Agy,
+    /// `copilot --output-format json`
+    Copilot,
+    /// Texto sin estructura: toda la salida es la respuesta.
+    Plain,
+}
+
+/// Un paso visible en el chat. Se identifica por `id` y se actualiza mientras avanza.
+#[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Step {
+    pub id: String,
+    /// text | thinking | command | edit | read | search | web | todo | agent | tool | error
+    pub kind: String,
+    /// Nombre de la herramienta o descripción breve.
+    #[serde(default)]
+    pub title: String,
+    /// Comando, ruta, patrón… o el texto en los pasos de texto.
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// running | done | error
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
+const MAX_OUTPUT: usize = 8000;
+
+fn tail(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_string();
+    }
+    let skip = count - max;
+    format!("…{}", s.chars().skip(skip).collect::<String>())
+}
+
+/// Tipo de paso según el nombre de la herramienta.
+fn classify(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
+    if has(&["todo", "plan"]) {
+        "todo"
+    } else if has(&["web", "fetch", "url", "browser"]) {
+        "web"
+    } else if has(&["bash", "shell", "command", "exec", "terminal"]) {
+        "command"
+    } else if has(&["edit", "write", "patch", "replace", "create", "notebook", "multiedit", "delete"]) {
+        "edit"
+    } else if has(&["read", "view", "cat", "open"]) {
+        "read"
+    } else if has(&["grep", "glob", "search", "find", "list", "ls"]) {
+        "search"
+    } else if has(&["task", "agent", "subagent"]) {
+        "agent"
+    } else {
+        "tool"
+    }
+}
+
+fn str_field<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| v.get(*k).and_then(Value::as_str)).filter(|s| !s.is_empty())
+}
+
+/// Texto de un resultado que puede ser cadena o lista de bloques {type:text, text}.
+fn content_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|i| i.get("text").and_then(Value::as_str).or_else(|| i.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Quita la envoltura `/bin/zsh -lc "…"` que Codex pone a los comandos.
+fn unwrap_shell(cmd: &str) -> String {
+    for sh in ["zsh", "bash", "sh"] {
+        for flag in [" -lc ", " -c "] {
+            if let Some(pos) = cmd.find(&format!("{sh}{flag}")) {
+                if cmd[..pos].chars().all(|c| c != ' ') {
+                    let rest = cmd[pos + sh.len() + flag.len()..].trim();
+                    let unq = rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(rest);
+                    return unq.replace("\\\"", "\"");
+                }
+            }
+        }
+    }
+    cmd.to_string()
+}
+
+pub struct Parser {
+    format: Format,
+    cwd: String,
+    cwd_alt: String,
+    steps: Vec<Step>,
+    index: HashMap<String, usize>,
+    final_text: Option<String>,
+    plain: String,
+}
+
+impl Parser {
+    pub fn new(format: Format, cwd: &Path) -> Self {
+        let cwd = cwd.to_string_lossy().trim_end_matches('/').to_string();
+        // En macOS /tmp es /private/tmp: algunas CLIs informan una u otra ruta.
+        let cwd_alt = cwd.strip_prefix("/private").map(str::to_string).unwrap_or_else(|| format!("/private{cwd}"));
+        Parser { format, cwd, cwd_alt, steps: vec![], index: HashMap::new(), final_text: None, plain: String::new() }
+    }
+
+    /// Ruta relativa al proyecto si está dentro de él.
+    fn rel(&self, p: &str) -> String {
+        for base in [&self.cwd, &self.cwd_alt] {
+            if let Some(r) = p.strip_prefix(base.as_str()) {
+                let r = r.trim_start_matches(['/', '\\']);
+                if !r.is_empty() {
+                    return r.to_string();
+                }
+            }
+        }
+        p.to_string()
+    }
+
+    /// Detalle de una llamada a herramienta: comando, ruta, patrón, URL…
+    fn detail_of(&self, input: &Value) -> String {
+        if let Some(s) = input.as_str() {
+            // apply_patch de Copilot/Codex: se extraen las rutas del parche.
+            let files: Vec<String> = s
+                .lines()
+                .filter_map(|l| {
+                    ["*** Update File: ", "*** Add File: ", "*** Delete File: "].iter().find_map(|p| l.strip_prefix(p))
+                })
+                .map(|p| self.rel(p.trim()))
+                .collect();
+            return if files.is_empty() { tail(s, 200) } else { files.join(", ") };
+        }
+        if let Some(c) = str_field(input, &["command", "CommandLine", "cmd"]) {
+            return c.to_string();
+        }
+        if let Some(p) = str_field(input, &["file_path", "filePath", "path", "Path", "TargetFile", "AbsolutePath", "notebook_path"]) {
+            return self.rel(p);
+        }
+        if let Some(q) = str_field(input, &["pattern", "query", "Query", "SearchPath", "url", "Url", "description", "prompt"]) {
+            return q.to_string();
+        }
+        if let Some(todos) = input.get("todos").and_then(Value::as_array) {
+            return todos
+                .iter()
+                .filter_map(|t| {
+                    let text = str_field(t, &["content", "text", "title"])?;
+                    let done = str_field(t, &["status"]).is_some_and(|s| s == "completed");
+                    Some(format!("{} {text}", if done { "☑" } else { "☐" }))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        String::new()
+    }
+
+    /// Crea o actualiza un paso; devuelve su estado actual.
+    fn put(&mut self, step: Step) -> Step {
+        if let Some(&i) = self.index.get(&step.id) {
+            let cur = &mut self.steps[i];
+            if !step.kind.is_empty() {
+                cur.kind = step.kind;
+            }
+            if !step.title.is_empty() {
+                cur.title = step.title;
+            }
+            if !step.detail.is_empty() {
+                cur.detail = step.detail;
+            }
+            if step.output.is_some() {
+                cur.output = step.output;
+            }
+            if !step.status.is_empty() {
+                cur.status = step.status;
+            }
+            if step.exit_code.is_some() {
+                cur.exit_code = step.exit_code;
+            }
+            return cur.clone();
+        }
+        self.index.insert(step.id.clone(), self.steps.len());
+        self.steps.push(step.clone());
+        step
+    }
+
+    fn append_text(&mut self, id: &str, delta: &str, done: bool) -> Step {
+        let status = if done { "done" } else { "running" };
+        if let Some(&i) = self.index.get(id) {
+            let cur = &mut self.steps[i];
+            cur.detail.push_str(delta);
+            cur.status = status.into();
+            return cur.clone();
+        }
+        self.put(Step { id: id.into(), kind: "text".into(), detail: delta.into(), status: status.into(), ..Default::default() })
+    }
+
+    fn tool_start(&mut self, id: &str, name: &str, input: &Value, title: Option<&str>) -> Step {
+        let kind = classify(name);
+        let mut detail = self.detail_of(input);
+        if kind == "command" {
+            detail = unwrap_shell(&detail);
+        }
+        let title = title.map(str::to_string).or_else(|| str_field(input, &["description"]).map(str::to_string)).unwrap_or_else(|| name.to_string());
+        self.put(Step { id: id.into(), kind: kind.into(), title, detail, status: "running".into(), ..Default::default() })
+    }
+
+    fn tool_end(&mut self, id: &str, output: String, ok: bool, exit_code: Option<i32>) -> Step {
+        let output = if output.trim().is_empty() { None } else { Some(tail(&output, MAX_OUTPUT)) };
+        self.put(Step { id: id.into(), output, status: if ok { "done" } else { "error" }.into(), exit_code, ..Default::default() })
+    }
+
+    /// Procesa una línea de la salida. Devuelve los pasos que han cambiado.
+    pub fn feed(&mut self, line: &str) -> Vec<Step> {
+        if self.format == Format::Plain {
+            self.plain.push_str(line);
+            self.plain.push('\n');
+            let text = self.plain.trim_end().to_string();
+            return vec![self.put(Step { id: "out".into(), kind: "text".into(), detail: text, status: "running".into(), ..Default::default() })];
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return vec![] };
+        match self.format {
+            Format::Claude => self.feed_claude(&v),
+            Format::Codex => self.feed_codex(&v),
+            Format::OpenCode => self.feed_opencode(&v),
+            Format::Agy => self.feed_agy(&v),
+            Format::Copilot => self.feed_copilot(&v),
+            Format::Plain => vec![],
+        }
+    }
+
+    fn feed_claude(&mut self, v: &Value) -> Vec<Step> {
+        let mut out = vec![];
+        match v.get("type").and_then(Value::as_str) {
+            Some("assistant") => {
+                let msg = &v["message"];
+                let msg_id = msg.get("id").and_then(Value::as_str).unwrap_or("m");
+                for (i, block) in msg["content"].as_array().into_iter().flatten().enumerate() {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            let text = block["text"].as_str().unwrap_or("");
+                            if !text.trim().is_empty() {
+                                out.push(self.put(Step {
+                                    id: format!("{msg_id}-{i}"),
+                                    kind: "text".into(),
+                                    detail: text.into(),
+                                    status: "done".into(),
+                                    ..Default::default()
+                                }));
+                            }
+                        }
+                        Some("thinking") => {
+                            let text = block["thinking"].as_str().unwrap_or("");
+                            if !text.trim().is_empty() {
+                                out.push(self.put(Step {
+                                    id: format!("{msg_id}-{i}"),
+                                    kind: "thinking".into(),
+                                    detail: text.into(),
+                                    status: "done".into(),
+                                    ..Default::default()
+                                }));
+                            }
+                        }
+                        Some("tool_use") => {
+                            let id = block["id"].as_str().unwrap_or("t").to_string();
+                            let name = block["name"].as_str().unwrap_or("tool");
+                            out.push(self.tool_start(&id, name, &block["input"], None));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some("user") => {
+                for block in v["message"]["content"].as_array().into_iter().flatten() {
+                    if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+                        let id = block["tool_use_id"].as_str().unwrap_or("");
+                        let ok = !block["is_error"].as_bool().unwrap_or(false);
+                        out.push(self.tool_end(id, content_text(&block["content"]), ok, None));
+                    }
+                }
+            }
+            Some("result") => {
+                if let Some(r) = v.get("result").and_then(Value::as_str) {
+                    self.final_text = Some(r.to_string());
+                }
+                if v["is_error"].as_bool().unwrap_or(false) {
+                    out.push(self.put(Step {
+                        id: "result-error".into(),
+                        kind: "error".into(),
+                        detail: v.get("result").and_then(Value::as_str).unwrap_or("Error").into(),
+                        status: "error".into(),
+                        ..Default::default()
+                    }));
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    fn feed_codex(&mut self, v: &Value) -> Vec<Step> {
+        let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
+        if ty == "error" || ty == "turn.failed" {
+            let msg = str_field(v, &["message"]).map(str::to_string).or_else(|| v["error"]["message"].as_str().map(str::to_string)).unwrap_or_default();
+            return vec![self.put(Step { id: format!("error-{}", self.steps.len()), kind: "error".into(), detail: msg, status: "error".into(), ..Default::default() })];
+        }
+        if !ty.starts_with("item.") {
+            return vec![];
+        }
+        let done = ty == "item.completed";
+        let item = &v["item"];
+        let id = item["id"].as_str().unwrap_or("i").to_string();
+        let status = match item["status"].as_str() {
+            Some("failed") => "error",
+            _ if done => "done",
+            _ => "running",
+        };
+        let step = match item["type"].as_str().unwrap_or("") {
+            "agent_message" => {
+                let text = item["text"].as_str().unwrap_or("").to_string();
+                if done {
+                    self.final_text = Some(text.clone());
+                }
+                Step { id, kind: "text".into(), detail: text, status: status.into(), ..Default::default() }
+            }
+            "reasoning" => Step { id, kind: "thinking".into(), detail: item["text"].as_str().unwrap_or("").into(), status: status.into(), ..Default::default() },
+            "command_execution" => {
+                let exit = item["exit_code"].as_i64().map(|c| c as i32);
+                let output = item["aggregated_output"].as_str().filter(|s| !s.is_empty()).map(|s| tail(s, MAX_OUTPUT));
+                let status = if exit.is_some_and(|c| c != 0) { "error" } else { status };
+                Step {
+                    id,
+                    kind: "command".into(),
+                    title: "Comando".into(),
+                    detail: unwrap_shell(item["command"].as_str().unwrap_or("")),
+                    output,
+                    status: status.into(),
+                    exit_code: exit,
+                }
+            }
+            "file_change" => {
+                let files: Vec<String> = item["changes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|c| c["path"].as_str().map(|p| self.rel(p)))
+                    .collect();
+                Step { id, kind: "edit".into(), title: "Cambio de archivos".into(), detail: files.join(", "), status: status.into(), ..Default::default() }
+            }
+            "mcp_tool_call" => Step {
+                id,
+                kind: "tool".into(),
+                title: format!("{}·{}", item["server"].as_str().unwrap_or("mcp"), item["tool"].as_str().unwrap_or("")),
+                detail: String::new(),
+                status: status.into(),
+                ..Default::default()
+            },
+            "web_search" => Step { id, kind: "web".into(), title: "Búsqueda web".into(), detail: item["query"].as_str().unwrap_or("").into(), status: status.into(), ..Default::default() },
+            "todo_list" => {
+                let detail = item["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|t| format!("{} {}", if t["completed"].as_bool().unwrap_or(false) { "☑" } else { "☐" }, t["text"].as_str().unwrap_or("")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Step { id, kind: "todo".into(), title: "Tareas".into(), detail, status: status.into(), ..Default::default() }
+            }
+            "error" => Step { id, kind: "error".into(), detail: item["message"].as_str().unwrap_or("").into(), status: "error".into(), ..Default::default() },
+            _ => return vec![],
+        };
+        vec![self.put(step)]
+    }
+
+    fn feed_opencode(&mut self, v: &Value) -> Vec<Step> {
+        let part = &v["part"];
+        match v.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                let text = part["text"].as_str().unwrap_or("").to_string();
+                if text.trim().is_empty() {
+                    return vec![];
+                }
+                self.final_text = Some(text.clone());
+                let id = part["id"].as_str().unwrap_or("t").to_string();
+                vec![self.put(Step { id, kind: "text".into(), detail: text, status: "done".into(), ..Default::default() })]
+            }
+            Some("reasoning") => {
+                let id = part["id"].as_str().unwrap_or("r").to_string();
+                vec![self.put(Step { id, kind: "thinking".into(), detail: part["text"].as_str().unwrap_or("").into(), status: "done".into(), ..Default::default() })]
+            }
+            Some("tool_use") => {
+                let id = part["callID"].as_str().or(part["id"].as_str()).unwrap_or("tool").to_string();
+                let name = part["tool"].as_str().unwrap_or("tool");
+                let state = &part["state"];
+                let mut steps = vec![self.tool_start(&id, name, &state["input"], state["title"].as_str().filter(|_| classify(name) != "command"))];
+                match state["status"].as_str() {
+                    Some("completed") | Some("error") => {
+                        let ok = state["status"].as_str() == Some("completed");
+                        let exit = state["metadata"]["exit"].as_i64().map(|c| c as i32);
+                        let output = state["output"].as_str().or(state["error"].as_str()).unwrap_or("").to_string();
+                        let ok = ok && exit.is_none_or(|c| c == 0);
+                        steps.push(self.tool_end(&id, output, ok, exit));
+                    }
+                    _ => {}
+                }
+                steps
+            }
+            Some("error") => {
+                let msg = v["error"]["data"]["message"].as_str().or(v["error"]["message"].as_str()).unwrap_or("Error").to_string();
+                vec![self.put(Step { id: format!("error-{}", self.steps.len()), kind: "error".into(), detail: msg, status: "error".into(), ..Default::default() })]
+            }
+            _ => vec![],
+        }
+    }
+
+    fn feed_agy(&mut self, v: &Value) -> Vec<Step> {
+        match v.get("event").and_then(Value::as_str) {
+            Some("step_update") => {
+                let s = &v["step_update"];
+                let idx = s["step_index"].as_i64().unwrap_or(0);
+                let id = format!("agy-{idx}");
+                let state = s["state"].as_str().unwrap_or("");
+                let status = match state {
+                    "DONE" => "done",
+                    "ERROR" | "FAILED" | "CANCELED" => "error",
+                    _ => "running",
+                };
+                match s["step_type"].as_str() {
+                    Some("agent_response") => match s["text_delta"].as_str() {
+                        Some(delta) => vec![self.append_text(&id, delta, status == "done")],
+                        None if status == "done" && self.index.contains_key(&id) => vec![self.append_text(&id, "", true)],
+                        None => vec![],
+                    },
+                    Some("tool") => {
+                        let info = &s["tool_info"];
+                        let name = s["tool_name"].as_str().or(info["name"].as_str()).unwrap_or("tool");
+                        let mut steps = vec![self.tool_start(&id, name, &info["parameters"], None)];
+                        if status != "running" {
+                            let output = info["output"].as_str().unwrap_or("").to_string();
+                            let exit = output
+                                .strip_prefix("Command exited with code ")
+                                .and_then(|r| r.split('.').next())
+                                .and_then(|n| n.trim().parse::<i32>().ok());
+                            let output = output.split_once("Command output:\n").map(|(_, o)| o.to_string()).unwrap_or(output);
+                            let ok = status == "done" && exit.is_none_or(|c| c == 0);
+                            steps.push(self.tool_end(&id, output.replace("\r\n", "\n"), ok, exit));
+                        }
+                        steps
+                    }
+                    _ => vec![],
+                }
+            }
+            Some("result") => {
+                let r = &v["result"];
+                if let Some(text) = r["response"].as_str() {
+                    self.final_text = Some(text.trim().to_string());
+                }
+                if r["status"].as_str().is_some_and(|s| s != "SUCCESS") {
+                    let msg = r["error"].as_str().or(r["error"]["message"].as_str()).unwrap_or("Antigravity terminó con error").to_string();
+                    return vec![self.put(Step { id: "agy-error".into(), kind: "error".into(), detail: msg, status: "error".into(), ..Default::default() })];
+                }
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    fn feed_copilot(&mut self, v: &Value) -> Vec<Step> {
+        let d = &v["data"];
+        match v.get("type").and_then(Value::as_str) {
+            Some("assistant.message") => {
+                let text = d["content"].as_str().unwrap_or("");
+                if text.trim().is_empty() {
+                    return vec![];
+                }
+                self.final_text = Some(text.to_string());
+                let id = d["messageId"].as_str().unwrap_or("m").to_string();
+                vec![self.put(Step { id, kind: "text".into(), detail: text.into(), status: "done".into(), ..Default::default() })]
+            }
+            Some("tool.execution_start") => {
+                let id = d["toolCallId"].as_str().unwrap_or("tool").to_string();
+                let name = d["toolName"].as_str().unwrap_or("tool");
+                vec![self.tool_start(&id, name, &d["arguments"], d["toolTitle"].as_str())]
+            }
+            Some("tool.execution_complete") => {
+                let id = d["toolCallId"].as_str().unwrap_or("tool").to_string();
+                let exit = d["shellExecution"]["exitCode"].as_i64().map(|c| c as i32);
+                let ok = d["success"].as_bool().unwrap_or(true) && exit.is_none_or(|c| c == 0);
+                let mut output = content_text(&d["result"]["content"]);
+                if let Some(i) = output.find("\n<shellId:") {
+                    output.truncate(i);
+                }
+                if output.is_empty() {
+                    output = d["error"]["message"].as_str().unwrap_or("").to_string();
+                }
+                vec![self.tool_end(&id, output, ok, exit)]
+            }
+            Some("session.error") => {
+                let msg = d["message"].as_str().unwrap_or("Error").to_string();
+                vec![self.put(Step { id: format!("error-{}", self.steps.len()), kind: "error".into(), detail: msg, status: "error".into(), ..Default::default() })]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Respuesta final del agente: la que da la CLI o, si no, el último texto.
+    pub fn final_text(&self) -> String {
+        if let Some(t) = &self.final_text {
+            return t.trim().to_string();
+        }
+        self.steps.iter().rev().find(|s| s.kind == "text").map(|s| s.detail.trim().to_string()).unwrap_or_default()
+    }
+
+    /// Pasos al terminar: los que quedaron «en curso» se dan por terminados.
+    pub fn finish(mut self) -> Vec<Step> {
+        for s in &mut self.steps {
+            if s.status == "running" {
+                s.status = "done".into();
+            }
+        }
+        self.steps
+    }
+}
+
+/// Resumen de lo que hizo un agente, para dárselo como contexto al siguiente.
+pub fn summary(steps: &[Step]) -> Option<String> {
+    let actions: Vec<String> = steps
+        .iter()
+        .filter_map(|s| match s.kind.as_str() {
+            "command" => Some(format!("ejecutó `{}`{}", tail(&s.detail, 120), s.exit_code.filter(|c| *c != 0).map(|c| format!(" (código {c})")).unwrap_or_default())),
+            "edit" => Some(format!("editó {}", s.detail)),
+            _ => None,
+        })
+        .collect();
+    if actions.is_empty() {
+        return None;
+    }
+    let shown: Vec<String> = actions.iter().take(15).cloned().collect();
+    let more = if actions.len() > 15 { format!(" y {} acciones más", actions.len() - 15) } else { String::new() };
+    Some(format!("(Acciones: {}{more})", shown.join("; ")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(format: Format, lines: &[&str]) -> Parser {
+        let mut p = Parser::new(format, Path::new("/repo"));
+        for l in lines {
+            p.feed(l);
+        }
+        p
+    }
+
+    #[test]
+    fn claude_comando_y_texto() {
+        let p = run(Format::Claude, &[
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls","description":"Listar"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"a.txt","is_error":false}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/repo/src/a.rs"}}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m3","content":[{"type":"text","text":"Hecho."}]}}"#,
+            r#"{"type":"result","result":"Hecho.","is_error":false}"#,
+        ]);
+        assert_eq!(p.final_text(), "Hecho.");
+        let steps = p.finish();
+        assert_eq!(steps[0].kind, "command");
+        assert_eq!(steps[0].detail, "ls");
+        assert_eq!(steps[0].output.as_deref(), Some("a.txt"));
+        assert_eq!(steps[1].kind, "edit");
+        assert_eq!(steps[1].detail, "src/a.rs");
+    }
+
+    #[test]
+    fn codex_comando_y_cambio() {
+        let p = run(Format::Codex, &[
+            r#"{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"/bin/zsh -lc ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"/bin/zsh -lc ls","aggregated_output":"a.txt\n","exit_code":0,"status":"completed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i2","type":"file_change","changes":[{"path":"/private/repo/a.txt","kind":"update"}],"status":"completed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i3","type":"agent_message","text":"Listo."}}"#,
+        ]);
+        assert_eq!(p.final_text(), "Listo.");
+        let steps = p.finish();
+        assert_eq!((steps[0].detail.as_str(), steps[0].exit_code, steps[0].status.as_str()), ("ls", Some(0), "done"));
+        assert_eq!(steps[1].detail, "a.txt");
+    }
+
+    #[test]
+    fn agy_texto_por_partes() {
+        let p = run(Format::Agy, &[
+            r#"{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"ls"},"output":"Command exited with code 0.\n\nCommand output:\na.txt\r\n"}}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":5,"state":"ACTIVE","step_type":"agent_response","text_delta":"Ho"}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":5,"state":"DONE","step_type":"agent_response","text_delta":"la"}}"#,
+        ]);
+        let steps = p.finish();
+        assert_eq!((steps[0].kind.as_str(), steps[0].exit_code, steps[0].output.as_deref()), ("command", Some(0), Some("a.txt\n")));
+        assert_eq!(steps[1].detail, "Hola");
+    }
+
+    #[test]
+    fn copilot_parche() {
+        let p = run(Format::Copilot, &[
+            r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"apply_patch","arguments":"*** Begin Patch\n*** Update File: /repo/a.txt\n@@\n+adios\n*** End Patch\n","toolTitle":"Applying patch"}}"#,
+            r#"{"type":"tool.execution_complete","data":{"toolCallId":"c1","success":true,"result":{"content":"ok"}}}"#,
+            r#"{"type":"assistant.message","data":{"messageId":"m","content":"Añadido."}}"#,
+        ]);
+        assert_eq!(p.final_text(), "Añadido.");
+        let steps = p.finish();
+        assert_eq!((steps[0].kind.as_str(), steps[0].detail.as_str()), ("edit", "a.txt"));
+    }
+
+    #[test]
+    fn resumen_de_acciones() {
+        let steps = vec![
+            Step { id: "1".into(), kind: "command".into(), detail: "npm test".into(), exit_code: Some(1), status: "error".into(), ..Default::default() },
+            Step { id: "2".into(), kind: "edit".into(), detail: "src/a.rs".into(), status: "done".into(), ..Default::default() },
+        ];
+        assert_eq!(summary(&steps).unwrap(), "(Acciones: ejecutó `npm test` (código 1); editó src/a.rs)");
+    }
+}
+
+/// Comprueba los traductores con salidas reales guardadas en una carpeta:
+/// `AGENTES_FMT_DIR=… cargo test formatos_reales -- --ignored --nocapture`
+#[cfg(test)]
+#[test]
+#[ignore]
+fn formatos_reales() {
+    let dir = std::env::var("AGENTES_FMT_DIR").expect("define AGENTES_FMT_DIR");
+    let cwd = std::env::var("AGENTES_FMT_CWD").unwrap_or_default();
+    for (name, format) in [("claude", Format::Claude), ("codex", Format::Codex), ("opencode", Format::OpenCode), ("agy", Format::Agy), ("copilot", Format::Copilot)] {
+        let Ok(text) = std::fs::read_to_string(format!("{dir}/{name}.jsonl")) else { continue };
+        let mut p = Parser::new(format, Path::new(&cwd));
+        for l in text.lines() {
+            p.feed(l);
+        }
+        println!("== {name} → «{}»", p.final_text());
+        for s in p.finish() {
+            println!("   [{}|{}] {} {}", s.kind, s.status, s.detail.replace('\n', " ⏎ ").chars().take(80).collect::<String>(), s.exit_code.map(|c| format!("(exit {c})")).unwrap_or_default());
+        }
+    }
+}

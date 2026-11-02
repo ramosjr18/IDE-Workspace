@@ -125,7 +125,31 @@
   .msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; user-select: text; }
   .user { align-self: flex-end; background: var(--me); color: var(--me-text); }
   .bot { align-self: flex-start; background: var(--bot); border: 1px solid var(--border); }
-  .bot .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+  .bot .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 600; display: flex; gap: 6px; align-items: center; }
+  .bot.live, .bot.has-steps { max-width: 92%; min-width: min(420px, 92%); }
+  .steps { display: flex; flex-direction: column; gap: 6px; white-space: normal; }
+  .step-text { white-space: pre-wrap; }
+  .step { border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--text) 3%, transparent); font-size: 13px; }
+  .step-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; cursor: default; min-width: 0; }
+  .step.expandable .step-head { cursor: pointer; }
+  .step.expandable .step-head:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+  .step-head .codicon { flex: none; color: var(--muted); }
+  .step-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .step-label code, .step-out, .step-todo { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .step-label .verb { color: var(--muted); margin-right: 4px; }
+  .step-label a { color: var(--me); cursor: pointer; text-decoration: none; }
+  .step-label a:hover { text-decoration: underline; }
+  .step-state { flex: none; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  .step.done .step-state .codicon { color: var(--ok); }
+  .step.error { border-color: color-mix(in srgb, var(--error) 50%, var(--border)); }
+  .step.error .step-state, .step.error .step-state .codicon { color: var(--error); }
+  .step-out { margin: 0; padding: 8px 10px; border-top: 1px solid var(--border); max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--muted); }
+  .step-out[hidden] { display: none; }
+  .step-todo { margin: 0; padding: 4px 10px 8px 32px; white-space: pre-wrap; }
+  .step.thinking .step-out { font-family: inherit; font-style: italic; }
+  .step-error { color: var(--error); white-space: pre-wrap; }
+  .working { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  #send.stop { background: var(--error); border-color: var(--error); }
   .error { border-color: var(--error); }
   .error .body { color: var(--error); }
   .empty { margin: auto; color: var(--muted); text-align: center; white-space: pre-line; }
@@ -302,7 +326,15 @@
     try {
       const conv = await invoke('get_conversation', { id });
       showEmpty('');
-      for (const m of conv.messages) addMessage(m.role, m.text, m.agentName);
+      for (const m of conv.messages) {
+        if (m.role === 'assistant' && m.steps?.length) {
+          const b = agentBubble(m.agentName);
+          m.steps.forEach((st) => upsertStep(b, st));
+          if (!m.steps.some((st) => st.kind === 'text')) b.steps.appendChild(textEl(m.text));
+        } else {
+          addMessage(m.role, m.text, m.agentName);
+        }
+      }
     } catch {
       loadConversation(null);
     }
@@ -398,8 +430,13 @@
 
   $('form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (sending) {
+      // El botón hace de «Detener» mientras el agente trabaja
+      if (liveRequest) invoke('cancel_chat', { requestId: liveRequest.id });
+      return;
+    }
     const message = $('input').value.trim();
-    if (!message || $('send').disabled) return;
+    if (!message) return;
     const agent = agents.find((a) => a.id === $('agent').value);
     if (!agent) return;
     if (agent.status === 'missing') return openAgentTerminal(agent, 'install');
@@ -407,22 +444,177 @@
     addMessage('user', message);
     $('input').value = '';
     draft = '';
-    $('send').disabled = true;
-    $('send').textContent = 'Pensando…';
+    $('send').textContent = 'Detener';
+    $('send').classList.add('stop');
     sending = true;
+    const bubble = agentBubble(agent.name, true);
+    liveRequest = { id: crypto.randomUUID(), bubble };
     try {
-      const reply = await invoke('chat', { conversationId, agent: agent.id, message });
+      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message });
       conversationId = reply.conversationId;
       store.set(convKey(), conversationId);
-      addMessage('assistant', reply.message.text || '(sin respuesta)', reply.message.agentName);
+      // Si la CLI no dio pasos de texto, se muestra la respuesta final
+      if (!bubble.el.querySelector('.step-text')) bubble.steps.appendChild(textEl(reply.message.text || '(sin respuesta)'));
       loadConversationList();
     } catch (err) {
-      addMessage('assistant', `${err}\n\n(Este mensaje no se ha guardado en la conversación.)`, agent.name, true);
+      bubble.el.classList.add('error');
+      bubble.steps.appendChild(Object.assign(document.createElement('div'), {
+        className: 'step-error',
+        textContent: `${err}\n\n(Este intercambio no se ha guardado en la conversación.)`,
+      }));
     } finally {
+      bubble.finish();
+      liveRequest = null;
       sending = false;
-      $('send').disabled = false;
       $('send').textContent = 'Enviar';
+      $('send').classList.remove('stop');
       $('input').focus();
+    }
+  });
+
+  // ---------- Pasos de los agentes (comandos, archivos, texto…) ----------
+  let liveRequest = null; // { id, bubble } de la respuesta en curso
+  const scrollChat = () => { $('messages').scrollTop = $('messages').scrollHeight; };
+  const nearBottom = () => $('messages').scrollHeight - $('messages').scrollTop - $('messages').clientHeight < 80;
+
+  const textEl = (text) => Object.assign(document.createElement('div'), { className: 'step-text', textContent: text });
+
+  // Burbuja de un agente con su lista de pasos. live = respuesta en curso (muestra «Trabajando…»).
+  function agentBubble(agentName, live) {
+    const empty = document.querySelector('.empty');
+    if (empty) empty.remove();
+    const el = document.createElement('div');
+    el.className = `msg bot has-steps${live ? ' live' : ''}`;
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = agentName;
+    const steps = document.createElement('div');
+    steps.className = 'steps';
+    el.append(who, steps);
+    let working = null;
+    if (live) {
+      working = document.createElement('div');
+      working.className = 'working';
+      working.innerHTML = '<i class="codicon codicon-loading codicon-modifier-spin"></i> <span>Trabajando…</span>';
+      el.appendChild(working);
+    }
+    $('messages').appendChild(el);
+    scrollChat();
+    const map = new Map();
+    return {
+      el, steps, map,
+      finish() {
+        working?.remove();
+        el.classList.remove('live');
+        // Lo que quedó «en curso» (p. ej. al detener) se marca como terminado
+        el.querySelectorAll('.step.running').forEach((n) => { n.classList.remove('running'); n.classList.add('done'); setState(n, { status: 'done' }); });
+      },
+    };
+  }
+
+  const VERBS = {
+    command: ['Ejecutando', ''], edit: ['Editando', 'Editó'], read: ['Leyendo', 'Leyó'], search: ['Buscando', 'Buscó'],
+    web: ['Consultando', 'Consultó'], agent: ['Subagente', 'Subagente'], todo: ['Tareas', 'Tareas'], thinking: ['Pensando', 'Pensamiento'],
+  };
+  const ICON = {
+    command: 'terminal', edit: 'edit', read: 'eye', search: 'search', web: 'globe', agent: 'hubot', todo: 'checklist',
+    thinking: 'lightbulb', tool: 'tools', error: 'error',
+  };
+
+  function setState(node, step) {
+    const st = node.querySelector('.step-state');
+    if (!st) return;
+    st.innerHTML = '';
+    if (step.status === 'running') st.innerHTML = '<i class="codicon codicon-loading codicon-modifier-spin"></i>';
+    else if (step.status === 'error') {
+      st.innerHTML = '<i class="codicon codicon-error"></i>';
+      if (step.exitCode != null) st.append(` código ${step.exitCode}`);
+    } else st.innerHTML = '<i class="codicon codicon-check"></i>';
+  }
+
+  // Crea o actualiza un paso dentro de una burbuja.
+  function upsertStep(bubble, step) {
+    const stick = nearBottom();
+    let node = bubble.map.get(step.id);
+    if (step.kind === 'text') {
+      if (!node) {
+        node = textEl('');
+        bubble.map.set(step.id, node);
+        bubble.steps.appendChild(node);
+      }
+      node.textContent = step.detail;
+      if (stick) scrollChat();
+      return;
+    }
+    if (step.kind === 'error') {
+      if (!node) {
+        node = Object.assign(document.createElement('div'), { className: 'step-error' });
+        bubble.map.set(step.id, node);
+        bubble.steps.appendChild(node);
+      }
+      node.textContent = step.detail;
+      return;
+    }
+    if (!node) {
+      node = document.createElement('div');
+      node.innerHTML = '<div class="step-head"><i class="codicon"></i><span class="step-label"></span><span class="step-state"></span></div>';
+      bubble.map.set(step.id, node);
+      bubble.steps.appendChild(node);
+      node.querySelector('.step-head').addEventListener('click', (e) => {
+        if (e.target.closest('a')) return;
+        const out = node.querySelector('.step-out');
+        if (out) out.hidden = !out.hidden;
+      });
+    }
+    node.className = `step ${step.kind} ${step.status}`;
+    node.querySelector('.step-head > .codicon').className = `codicon codicon-${ICON[step.kind] || 'tools'}`;
+    // Etiqueta: verbo + comando/ruta
+    const label = node.querySelector('.step-label');
+    label.innerHTML = '';
+    const [running, done] = VERBS[step.kind] || [step.title, step.title];
+    const verb = step.status === 'running' ? running : done;
+    if (verb) label.appendChild(Object.assign(document.createElement('span'), { className: 'verb', textContent: verb }));
+    if (step.kind === 'command') {
+      label.appendChild(Object.assign(document.createElement('code'), { textContent: `$ ${step.detail}` }));
+    } else if (step.kind === 'edit' || step.kind === 'read') {
+      step.detail.split(', ').forEach((path, i) => {
+        if (i) label.append(', ');
+        const a = Object.assign(document.createElement('a'), { textContent: path, title: 'Abrir en el panel' });
+        a.addEventListener('click', () => openFile(path, { switchTab: true }));
+        label.appendChild(a);
+      });
+    } else if (step.kind === 'tool') {
+      label.appendChild(Object.assign(document.createElement('code'), { textContent: step.detail ? `${step.title} · ${step.detail}` : step.title }));
+    } else if (step.kind !== 'thinking' && step.kind !== 'todo') {
+      label.appendChild(Object.assign(document.createElement('code'), { textContent: step.detail }));
+    }
+    label.title = step.title && step.title !== step.detail ? `${step.title}\n${step.detail}` : step.detail;
+    setState(node, step);
+    // Contenido desplegable: salida del comando, pensamiento… La lista de tareas se ve siempre.
+    let out = node.querySelector('.step-out, .step-todo');
+    const body = step.kind === 'todo' || step.kind === 'thinking' ? step.detail : step.output;
+    if (body) {
+      if (!out) {
+        out = document.createElement('pre');
+        out.className = step.kind === 'todo' ? 'step-todo' : 'step-out';
+        out.hidden = step.kind !== 'todo';
+        node.appendChild(out);
+      }
+      out.textContent = body;
+      node.classList.toggle('expandable', step.kind !== 'todo');
+    }
+    if (stick) scrollChat();
+  }
+
+  // Pasos que llegan de Rust mientras el agente trabaja
+  listen('agent-step', (e) => {
+    const { requestId, step } = e.payload;
+    if (!liveRequest || liveRequest.id !== requestId) return;
+    upsertStep(liveRequest.bubble, step);
+    // Seguir: cuando el agente edita un archivo, se abre en el panel
+    if (step.kind === 'edit' && step.status !== 'running' && pressed('follow')) {
+      const first = step.detail.split(', ')[0];
+      if (first && !first.startsWith('/')) openFile(first, { switchTab: true, refresh: first === currentFile });
     }
   });
 

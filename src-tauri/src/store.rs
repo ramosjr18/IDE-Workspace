@@ -16,6 +16,9 @@ pub struct Message {
     pub agent_name: Option<String>,
     #[serde(default)]
     pub ts: String,
+    /// Pasos que hizo el agente (comandos, archivos…), para volver a mostrarlos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<crate::stream::Step>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

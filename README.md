@@ -1,6 +1,6 @@
 # Chat de agentes
 
-App de escritorio (macOS, Windows y Linux) para chatear con los agentes CLI: Claude, Codex, OpenCode, Antigravity (agy) y Gemini. Hecha con [Tauri](https://tauri.app) y Rust: el instalador pesa unos 4 MB.
+App de escritorio (macOS, Windows y Linux) para chatear con los agentes CLI: Claude, Codex, OpenCode, Antigravity (agy), Copilot y Gemini. Hecha con [Tauri](https://tauri.app) y Rust: el instalador pesa unos 4 MB.
 
 Usa las CLIs y las sesiones que ya tengas en tu ordenador. Si un agente no está instalado o no tiene la sesión iniciada, la propia app te deja instalarlo e iniciar sesión.
 
@@ -49,8 +49,22 @@ El menú se cierra al elegir algo, al pulsar fuera o con Esc.
 | OpenCode | `npm install -g opencode-ai` | `opencode auth login` (tiene modelos gratuitos sin sesión) |
 | Antigravity | instalador oficial (`antigravity.google/cli`) | `agy` |
 | Gemini | `npm install -g @google/gemini-cli` | `gemini` |
+| Copilot | `npm install -g @github/copilot` | `copilot login` (también vale la sesión de `gh`) |
 
-Codex, OpenCode y Gemini se instalan con npm, así que necesitan Node.js.
+Codex, OpenCode, Gemini y Copilot se instalan con npm, así que necesitan Node.js.
+
+## Ver lo que hace cada agente
+
+Mientras un agente trabaja, su respuesta en el chat muestra en vivo cada paso, como en Claude Code:
+
+- **Comandos** (`$ npm test`), con su salida (pulsa para desplegarla) y el código de salida si fallan.
+- **Archivos** que lee o edita. Al pulsarlos se abren en el panel de archivos.
+- **Búsquedas**, consultas web, subagentes, lista de tareas y lo que va pensando, si la CLI lo cuenta.
+- Sus mensajes intermedios y la respuesta final.
+
+El botón **Enviar** pasa a ser **Detener** mientras el agente trabaja. Los pasos se guardan con la conversación, así que se ven también al volver a abrirla.
+
+Cada CLI informa de sus pasos en su propio formato (Claude `stream-json`, Codex `--json`, OpenCode `--format json`, Antigravity `stream-json`, Copilot `--output-format json`); la app los traduce a uno común (`src-tauri/src/stream.rs`). Gemini solo muestra el texto de la respuesta.
 
 ## Panel de archivos (como VS Code)
 
@@ -73,12 +87,13 @@ Mientras un agente trabaja, el panel muestra el archivo que está editando (bot�
 | Chat | `ui/index.html` | La ventana: chat, menú ☰, panel de archivos y terminal. |
 | Caché propia | `src-tauri/src/store.rs` | Guarda cada conversación en disco (`~/.ide-workspace-chat/conversations`, o `CHAT_DATA_DIR`) con qué agente escribió cada respuesta. No depende de ninguna CLI. |
 | Adaptadores | `src-tauri/src/agents.rs` | Convierte la conversación guardada en el contexto del CLI elegido y lo ejecuta. Aquí se cambian comandos y modelos. |
+| Pasos en vivo | `src-tauri/src/stream.rs` | Traduce la salida JSON de cada CLI a pasos comunes (comando, edición, lectura, texto…). |
 | Proyecto | `src-tauri/src/project.rs` | Carpeta donde trabajan los agentes y comando `agentes`. |
 | Panel de archivos | `src-tauri/src/workspace.rs` | Árbol del proyecto, estado git, líneas cambiadas, guardar y vigilancia de la carpeta. |
 | Terminal | `src-tauri/src/term.rs` | Terminal real (PTY) para instalar agentes e iniciar sesión. |
 | Entorno | `src-tauri/src/env.rs` | Encuentra las CLIs aunque la app se abra desde el Finder o el menú, sin el PATH de la terminal. |
 
-Puedes cambiar de agente a mitad de conversación. El nuevo recibe todo lo anterior, con el nombre del agente que escribió cada respuesta (por ejemplo, «[Codex]: …»). Se incluyen los mensajes más recientes hasta unos 30 000 caracteres (20 000 en agy, que recibe el texto como argumento). Si un agente falla, ese intercambio no se guarda.
+Puedes cambiar de agente a mitad de conversación. El nuevo recibe todo lo anterior, con el nombre del agente que escribió cada respuesta (por ejemplo, «[Codex]: …») y un resumen de lo que hizo (comandos que ejecutó y archivos que editó). Se incluyen los mensajes más recientes hasta unos 30 000 caracteres (20 000 en agy, que recibe el texto como argumento). Si un agente falla, ese intercambio no se guarda.
 
 ## Desarrollo
 

@@ -2,11 +2,12 @@
 
 use crate::env::{self, child_env, strip_ansi, which};
 use crate::store::Message;
+use crate::stream::{self, Format, Parser, Step};
 use serde::Serialize;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -24,6 +25,8 @@ pub enum StatusCheck {
     AgyModels,
     /// Gemini: archivo de credenciales o variable GEMINI_API_KEY.
     GeminiCreds,
+    /// Copilot: usuario guardado por `copilot login`, token en el entorno o sesión de `gh`.
+    CopilotAuth,
 }
 
 pub struct Agent {
@@ -34,6 +37,8 @@ pub struct Agent {
     /// (así en Windows nunca pasa por la línea de comandos de cmd.exe).
     pub args: &'static [&'static str],
     pub prompt_arg: bool,
+    /// Formato de la salida (con las opciones de `args`), para mostrar sus pasos en vivo.
+    pub format: Format,
     /// Límite de contexto en caracteres (agy lo recibe como argumento: Windows limita a ~32 000).
     pub max_context: usize,
     pub install_unix: &'static str,
@@ -47,8 +52,9 @@ pub const AGENTS: &[Agent] = &[
         id: "claude",
         name: "Claude",
         cmd: "claude",
-        args: &["-p", "--dangerously-skip-permissions"],
+        args: &["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
         prompt_arg: false,
+        format: Format::Claude,
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "curl -fsSL https://claude.ai/install.sh | bash",
         install_win: "irm https://claude.ai/install.ps1 | iex",
@@ -59,8 +65,9 @@ pub const AGENTS: &[Agent] = &[
         id: "codex",
         name: "Codex",
         cmd: "codex",
-        args: &["exec", "--approve-for-me", "--skip-git-repo-check", "-"],
+        args: &["exec", "--approve-for-me", "--skip-git-repo-check", "--json", "-"],
         prompt_arg: false,
+        format: Format::Codex,
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "npm install -g @openai/codex",
         install_win: "npm install -g @openai/codex",
@@ -71,8 +78,9 @@ pub const AGENTS: &[Agent] = &[
         id: "opencode",
         name: "OpenCode",
         cmd: "opencode",
-        args: &["run", "--auto"],
+        args: &["run", "--auto", "--format", "json"],
         prompt_arg: false,
+        format: Format::OpenCode,
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "npm install -g opencode-ai",
         install_win: "npm install -g opencode-ai",
@@ -83,8 +91,9 @@ pub const AGENTS: &[Agent] = &[
         id: "agy",
         name: "Antigravity (agy)",
         cmd: "agy",
-        args: &["--dangerously-skip-permissions", "--print-timeout", "30m"],
+        args: &["--dangerously-skip-permissions", "--print-timeout", "30m", "--output-format", "stream-json"],
         prompt_arg: true,
+        format: Format::Agy,
         max_context: 20_000,
         install_unix: "curl -fsSL https://antigravity.google/cli | bash",
         install_win: "irm https://antigravity.google/cli/install.ps1 | iex",
@@ -97,11 +106,25 @@ pub const AGENTS: &[Agent] = &[
         cmd: "gemini",
         args: &["--yolo", "--skip-trust"],
         prompt_arg: false,
+        format: Format::Plain,
         max_context: MAX_CONTEXT_CHARS,
         install_unix: "npm install -g @google/gemini-cli",
         install_win: "npm install -g @google/gemini-cli",
         login: "gemini",
         status: StatusCheck::GeminiCreds,
+    },
+    Agent {
+        id: "copilot",
+        name: "Copilot",
+        cmd: "copilot",
+        args: &["--yolo", "--no-ask-user", "--output-format", "json"],
+        prompt_arg: false,
+        format: Format::Copilot,
+        max_context: MAX_CONTEXT_CHARS,
+        install_unix: "npm install -g @github/copilot",
+        install_win: "npm install -g @github/copilot",
+        login: "copilot login",
+        status: StatusCheck::CopilotAuth,
     },
 ];
 
@@ -178,6 +201,13 @@ pub async fn status(agent: &Agent) -> &'static str {
         StatusCheck::GeminiCreds => {
             std::env::var("GEMINI_API_KEY").is_ok() || env::home().join(".gemini").join("oauth_creds.json").exists()
         }
+        StatusCheck::CopilotAuth => {
+            let saved = std::fs::read_to_string(env::home().join(".copilot").join("config.json"))
+                .map(|t| t.contains("\"logged_in_users\"") && !t.contains("\"logged_in_users\": []"))
+                .unwrap_or(false);
+            let token = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"].iter().any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
+            saved || token || exec("gh", &["auth", "token"], short, &[]).await.0 == 0
+        }
     };
     if ready { "ready" } else { "login" }
 }
@@ -189,7 +219,11 @@ pub fn build_prompt(agent: &Agent, messages: &[Message], message: &str) -> Strin
     let mut total = 0;
     for m in messages.iter().rev() {
         let who = if m.role == "user" { "Usuario" } else { m.agent_name.as_deref().or(m.agent.as_deref()).unwrap_or("Asistente") };
-        let line = format!("[{who}]: {}", m.text);
+        let mut text = m.text.clone();
+        if let Some(sum) = m.steps.as_deref().and_then(stream::summary) {
+            text = format!("{sum}\n{text}");
+        }
+        let line = format!("[{who}]: {text}");
         let len = line.chars().count();
         if total + len > agent.max_context {
             break;
@@ -209,8 +243,21 @@ pub fn build_prompt(agent: &Agent, messages: &[Message], message: &str) -> Strin
     )
 }
 
-/// Ejecuta el agente con el prompt en la carpeta `cwd` y devuelve su respuesta.
-pub async fn run(agent: &Agent, prompt: &str, cwd: &Path) -> Result<String, String> {
+/// Resultado de una ejecución: respuesta final y pasos que se mostraron.
+pub struct RunResult {
+    pub text: String,
+    pub steps: Vec<Step>,
+}
+
+/// Ejecuta el agente con el prompt en la carpeta `cwd`. Cada paso (comando, archivo editado,
+/// texto…) se pasa a `on_step` en cuanto ocurre. Si llega `cancel`, se detiene el proceso.
+pub async fn run(
+    agent: &Agent,
+    prompt: &str,
+    cwd: &Path,
+    mut on_step: impl FnMut(&Step),
+    mut cancel: tokio::sync::oneshot::Receiver<()>,
+) -> Result<RunResult, String> {
     let file = which(agent.cmd).ok_or_else(|| format!("{} no está instalado", agent.cmd))?;
     let mut cmd = command(&file);
     if agent.prompt_arg {
@@ -224,18 +271,52 @@ pub async fn run(agent: &Agent, prompt: &str, cwd: &Path) -> Result<String, Stri
         let _ = stdin.write_all(input.as_bytes()).await;
         let _ = stdin.shutdown().await;
     });
-    let output = tokio::time::timeout(RUN_TIMEOUT, child.wait_with_output())
-        .await
-        .map_err(|_| "Tiempo agotado (10 min)".to_string())?
-        .map_err(|e| e.to_string())?;
-    let out = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    if output.status.success() {
-        return Ok(out.trim().to_string());
+    // stderr se guarda aparte para el mensaje de error.
+    let mut stderr = child.stderr.take().unwrap();
+    let err_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf).await;
+        String::from_utf8_lossy(&buf).to_string()
+    });
+
+    let mut parser = Parser::new(agent.format, cwd);
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let deadline = tokio::time::sleep(RUN_TIMEOUT);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => {
+                    for step in parser.feed(&strip_ansi(&line)) {
+                        on_step(&step);
+                    }
+                }
+                _ => break,
+            },
+            _ = &mut cancel => {
+                let _ = child.kill().await;
+                return Err("Detenido.".into());
+            }
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                return Err("Tiempo agotado (10 min)".into());
+            }
+        }
     }
-    let err = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    let detail = if err.trim().is_empty() { out } else { err };
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    let err = strip_ansi(&err_task.await.unwrap_or_default());
+    let text = parser.final_text();
+    let steps = parser.finish();
+    if status.success() {
+        return Ok(RunResult { text, steps });
+    }
+    let detail = if err.trim().is_empty() {
+        steps.iter().rev().find(|s| s.kind == "error" || s.kind == "text").map(|s| s.detail.clone()).unwrap_or_default()
+    } else {
+        err
+    };
     let tail: String = detail.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
-    Err(format!("{} terminó con código {}\n{}", agent.cmd, output.status.code().unwrap_or(-1), tail.trim()))
+    Err(format!("{} terminó con código {}\n{}", agent.cmd, status.code().unwrap_or(-1), tail.trim()))
 }
 
 /// Shell y argumentos para instalar el agente o iniciar sesión en el terminal de la app.
