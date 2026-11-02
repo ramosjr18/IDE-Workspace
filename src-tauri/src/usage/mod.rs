@@ -2,10 +2,17 @@
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use tauri::State;
+mod local;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum UsageStatus { Ok, NoSession, Expired, Unavailable, NoData }
+pub enum UsageStatus {
+    Ok,
+    NoSession,
+    Expired,
+    Unavailable,
+    NoData,
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,11 +22,21 @@ pub struct UsageLimit {
     pub resets_at: Option<String>,
 }
 #[derive(Clone, Default, Serialize)]
-pub struct Today { pub tokens: u64, pub prompts: Option<u64>, pub sessions: Option<u64> }
+pub struct Today {
+    pub tokens: u64,
+    pub prompts: Option<u64>,
+    pub sessions: Option<u64>,
+}
 #[derive(Clone, Serialize)]
-pub struct Day { pub date: String, pub tokens: u64 }
+pub struct Day {
+    pub date: String,
+    pub tokens: u64,
+}
 #[derive(Clone, Serialize)]
-pub struct Model { pub model: String, pub tokens: u64 }
+pub struct Model {
+    pub model: String,
+    pub tokens: u64,
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageRecord {
@@ -37,9 +54,19 @@ pub struct UsageRecord {
 }
 impl UsageRecord {
     fn empty(id: &str, name: &str) -> Self {
-        Self { id: id.into(), name: name.into(), plan: None, status: UsageStatus::NoData,
-            status_text: Some("Sin datos de uso".into()), help: None, limits: vec![],
-            today: Today::default(), days: vec![], models: vec![], updated_at: chrono::Utc::now().to_rfc3339() }
+        Self {
+            id: id.into(),
+            name: name.into(),
+            plan: None,
+            status: UsageStatus::NoData,
+            status_text: Some("Sin datos de uso".into()),
+            help: None,
+            limits: vec![],
+            today: Today::default(),
+            days: vec![],
+            models: vec![],
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        }
     }
 }
 
@@ -50,17 +77,38 @@ pub struct UsageState {
 
 async fn collect() -> Vec<UsageRecord> {
     // PATH discovery may launch the login shell; keep it off the main thread.
-    tauri::async_runtime::spawn_blocking(|| crate::agents::AGENTS.iter()
-        .filter(|a| crate::env::which(a.cmd).is_some())
-        .map(|a| UsageRecord::empty(a.id, a.name)).collect()).await.unwrap_or_default()
+    let records: Vec<UsageRecord> = tauri::async_runtime::spawn_blocking(|| {
+        crate::agents::AGENTS
+            .iter()
+            .filter(|a| crate::env::which(a.cmd).is_some())
+            .map(|a| UsageRecord::empty(a.id, a.name))
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    futures::future::join_all(records.into_iter().map(|mut record| async move {
+        let fallback = record.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            local::collect(&mut record);
+            record
+        })
+        .await
+        .unwrap_or(fallback)
+    }))
+    .await
 }
 
 #[tauri::command]
-pub async fn get_usage(force: bool, state: State<'_, UsageState>) -> Result<Vec<UsageRecord>, String> {
+pub async fn get_usage(
+    force: bool,
+    state: State<'_, UsageState>,
+) -> Result<Vec<UsageRecord>, String> {
     let mut cache = state.cache.lock().await;
     if !force {
         if let Some((at, records)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(60) { return Ok(records.clone()); }
+            if at.elapsed() < Duration::from_secs(60) {
+                return Ok(records.clone());
+            }
         }
     }
     let records = collect().await;
