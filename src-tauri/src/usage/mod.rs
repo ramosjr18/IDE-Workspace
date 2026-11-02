@@ -2,6 +2,7 @@
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use tauri::State;
+mod limits;
 mod local;
 
 #[derive(Clone, Serialize)]
@@ -72,10 +73,11 @@ impl UsageRecord {
 
 #[derive(Default)]
 pub struct UsageState {
+    limits: limits::LimitsState,
     cache: tokio::sync::Mutex<Option<(Instant, Vec<UsageRecord>)>>,
 }
 
-async fn collect() -> Vec<UsageRecord> {
+async fn collect(state: &UsageState) -> Vec<UsageRecord> {
     // PATH discovery may launch the login shell; keep it off the main thread.
     let records: Vec<UsageRecord> = tauri::async_runtime::spawn_blocking(|| {
         crate::agents::AGENTS
@@ -88,12 +90,14 @@ async fn collect() -> Vec<UsageRecord> {
     .unwrap_or_default();
     futures::future::join_all(records.into_iter().map(|mut record| async move {
         let fallback = record.clone();
-        tauri::async_runtime::spawn_blocking(move || {
+        let mut record = tauri::async_runtime::spawn_blocking(move || {
             local::collect(&mut record);
             record
         })
         .await
-        .unwrap_or(fallback)
+        .unwrap_or(fallback);
+        state.limits.collect(&mut record).await;
+        record
     }))
     .await
 }
@@ -111,7 +115,7 @@ pub async fn get_usage(
             }
         }
     }
-    let records = collect().await;
+    let records = collect(&state).await;
     *cache = Some((Instant::now(), records.clone()));
     Ok(records)
 }
