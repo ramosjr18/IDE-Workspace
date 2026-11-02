@@ -4,17 +4,26 @@
 //!   agents.rs     → adaptadores: cómo cada CLI recibe esa conversación y responde
 //!   project.rs    → carpeta del proyecto donde trabajan los agentes (como `claude` o `code .`)
 //!   council.rs    → consejo: varios agentes deliberan y convergen en un ADR o política
-//!   term.rs       → terminal para instalar agentes e iniciar sesión
+//!   term.rs       → terminales (PTY): instalar agentes, pestaña Terminal y paneles de la vista Agentes
+//!   panes.rs      → vista Agentes: `agentes run`, worktrees y paneles en mosaico
+//!   workflows.rs  → formas de trabajar (instrucciones que se añaden al agente del chat)
 //!   workspace.rs  → panel derecho: árbol de archivos y archivo que se está editando
 
 mod agents;
 mod council;
 mod env;
+mod panes;
 mod project;
 mod store;
 mod stream;
 mod term;
+mod workflows;
 mod workspace;
+
+/// Modo cliente del ejecutable: `agentes run | status | wait | kill` (lo usa el `agentes` interno).
+pub fn cli_main(args: Vec<String>) -> i32 {
+    panes::cli_main(args)
+}
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -175,6 +184,7 @@ async fn chat(
     conversation_id: Option<String>,
     agent: String,
     message: String,
+    workflow: Option<String>,
 ) -> Result<ChatReply, String> {
     let ag = agents::get(&agent).ok_or_else(|| format!("Agente desconocido: {agent}"))?;
     if message.trim().is_empty() {
@@ -194,7 +204,19 @@ async fn chat(
     let on_step = |step: &stream::Step| {
         let _ = app.emit("agent-step", StepEvent { request_id: &request_id, step });
     };
-    let result = agents::run(ag, &agents::build_prompt(ag, &previous, &message), &cwd, on_step, rx).await;
+    // Forma de trabajar y nota del lanzador: van en el prompt, no se guardan en la conversación.
+    let mut prompt = agents::build_prompt(ag, &previous, &message);
+    if let Some(w) = workflow.as_deref().and_then(workflows::get).filter(|w| !w.instructions.is_empty()) {
+        prompt = format!("{}
+
+{prompt}", w.instructions);
+    }
+    if env::launcher_ready() {
+        prompt = format!("{}
+
+{prompt}", workflows::LAUNCHER_NOTE);
+    }
+    let result = agents::run(ag, &prompt, &cwd, on_step, rx).await;
     running.0.lock().unwrap().remove(&request_id);
     busy.0.lock().unwrap().remove(&key);
     let result = result?;
@@ -392,7 +414,7 @@ fn term_start(
     }
     let (command, shell, args) = agents::terminal_command(ag, &action);
     let file = env::which(&shell).unwrap_or_else(|| PathBuf::from(&shell));
-    terms.start(app, term::Job { command, file, args, cwd: env::home() }, cols, rows)
+    terms.start(app, term::Job::new(command, file, args, env::home()), cols, rows)
 }
 
 /// Shell interactiva de la pestaña Terminal, en la carpeta del proyecto (o en la de usuario si no hay).
@@ -401,7 +423,55 @@ fn term_shell(app: AppHandle, terms: State<'_, term::Terminals>, current: State<
     let cwd = current.get().unwrap_or_else(|_| env::home());
     let (file, args) = env::interactive_shell();
     let command = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    terms.start(app, term::Job { command, file, args, cwd }, cols, rows)
+    terms.start(app, term::Job::new(command, file, args, cwd), cols, rows)
+}
+
+#[tauri::command]
+fn term_replay(terms: State<'_, term::Terminals>, id: u32) -> String {
+    terms.replay(id)
+}
+
+#[tauri::command]
+fn list_workflows() -> Vec<workflows::Workflow> {
+    workflows::list()
+}
+
+/// Paneles de la vista Agentes del proyecto actual.
+#[tauri::command]
+fn panes_list(current: State<'_, CurrentProject>, panes: State<'_, Arc<panes::Panes>>) -> Vec<panes::Pane> {
+    match current.get() {
+        Ok(dir) => panes.list(&panes::repo_root(&dir).to_string_lossy()),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// «+ Lanzar» desde la vista Agentes.
+#[tauri::command]
+async fn pane_launch(
+    app: AppHandle,
+    current: State<'_, CurrentProject>,
+    cli: String,
+    name: Option<String>,
+    worktree: Option<String>,
+    branch: Option<String>,
+    args: Vec<String>,
+    brief: Option<String>,
+) -> Result<panes::Pane, String> {
+    let cwd = current.get()?.to_string_lossy().to_string();
+    let req = panes::LaunchRequest { cwd, cli, name, worktree, branch, args, stdin: brief };
+    tauri::async_runtime::spawn_blocking(move || panes::launch(&app, req)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn pane_kill(terms: State<'_, term::Terminals>, id: u32) {
+    terms.kill(id)
+}
+
+#[tauri::command]
+fn pane_close(app: AppHandle, terms: State<'_, term::Terminals>, panes: State<'_, Arc<panes::Panes>>, id: u32) {
+    terms.forget(id);
+    panes.remove(id);
+    let _ = app.emit("panes-changed", ());
 }
 
 #[tauri::command]
@@ -436,6 +506,7 @@ pub fn run() {
         .manage(Arc::new(council::Runs::default()))
         .manage(CurrentProject(Mutex::new(initial.clone())))
         .manage(term::Terminals::default())
+        .manage(Arc::new(panes::Panes::default()))
         .manage(workspace::Watcher::default())
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -444,6 +515,7 @@ pub fn run() {
             if let Some(dir) = initial.clone() {
                 let _ = app.state::<workspace::Watcher>().watch(app.handle().clone(), dir);
             }
+            panes::start_server(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -471,6 +543,12 @@ pub fn run() {
             get_conversation,
             term_start,
             term_shell,
+            term_replay,
+            list_workflows,
+            panes_list,
+            pane_launch,
+            pane_kill,
+            pane_close,
             term_write,
             term_resize,
             term_kill

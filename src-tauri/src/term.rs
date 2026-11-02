@@ -16,10 +16,14 @@ struct Session {
     killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
+/// Salida guardada por terminal para volver a pintarla (al cambiar de proyecto o recargar la vista).
+const REPLAY_MAX: usize = 512 * 1024;
+
 #[derive(Default)]
 pub struct Terminals {
     next: AtomicU32,
     sessions: Arc<Mutex<HashMap<u32, Session>>>,
+    buffers: Arc<Mutex<HashMap<u32, String>>>,
 }
 
 pub struct Job {
@@ -27,6 +31,18 @@ pub struct Job {
     pub file: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    /// Variables extra para el proceso.
+    pub env: Vec<(String, String)>,
+    /// Copia de la salida (sin colores) en un archivo, p. ej. para que el orquestador la lea.
+    pub log: Option<PathBuf>,
+    /// Se llama con el código de salida cuando termina.
+    pub on_exit: Option<Box<dyn FnOnce(i32) + Send>>,
+}
+
+impl Job {
+    pub fn new(command: String, file: PathBuf, args: Vec<String>, cwd: PathBuf) -> Self {
+        Job { command, file, args, cwd, env: Vec::new(), log: None, on_exit: None }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -54,6 +70,9 @@ impl Terminals {
             cmd.env(k, v);
         }
         cmd.env("TERM", "xterm-256color");
+        for (k, v) in &job.env {
+            cmd.env(k, v);
+        }
         let mut child = pty.slave.spawn_command(cmd).map_err(|e| format!("No se pudo abrir el terminal: {e}"))?;
         drop(pty.slave);
 
@@ -63,10 +82,14 @@ impl Terminals {
         let killer = child.clone_killer();
         self.sessions.lock().unwrap().insert(id, Session { writer, master: pty.master, killer });
 
-        let _ = app.emit("term-output", Output { id, data: format!("\x1b[90m$ {}\x1b[0m\r\n", job.command) });
+        let banner = format!("\x1b[90m$ {}\x1b[0m\r\n", job.command);
+        self.buffers.lock().unwrap().insert(id, banner.clone());
+        let _ = app.emit("term-output", Output { id, data: banner });
 
         // Lee la salida. Guarda los bytes de un carácter UTF-8 partido entre dos lecturas.
         let app_out = app.clone();
+        let buffers = self.buffers.clone();
+        let mut log = job.log.as_ref().and_then(|p| std::fs::File::create(p).ok());
         let reader_thread = std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             let mut pending: Vec<u8> = Vec::new();
@@ -82,6 +105,19 @@ impl Terminals {
                         };
                         let data = String::from_utf8_lossy(&pending[..valid]).to_string();
                         pending.drain(..valid);
+                        if let Some(f) = log.as_mut() {
+                            let _ = f.write_all(crate::env::strip_ansi(&data).replace('\r', "").as_bytes());
+                        }
+                        if let Some(buf) = buffers.lock().unwrap().get_mut(&id) {
+                            buf.push_str(&data);
+                            if buf.len() > REPLAY_MAX {
+                                let mut cut = buf.len() - REPLAY_MAX;
+                                while !buf.is_char_boundary(cut) {
+                                    cut += 1;
+                                }
+                                buf.drain(..cut);
+                            }
+                        }
                         let _ = app_out.emit("term-output", Output { id, data });
                     }
                 }
@@ -89,10 +125,14 @@ impl Terminals {
         });
 
         let sessions = self.sessions.clone();
+        let on_exit = job.on_exit;
         std::thread::spawn(move || {
             let code = child.wait().map(|s| s.exit_code() as i32).unwrap_or(-1);
             let _ = reader_thread.join();
             sessions.lock().unwrap().remove(&id);
+            if let Some(f) = on_exit {
+                f(code);
+            }
             let _ = app.emit("term-exit", Exit { id, code });
         });
         Ok(id)
@@ -109,6 +149,17 @@ impl Terminals {
         if let Some(s) = self.sessions.lock().unwrap().get(&id) {
             let _ = s.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         }
+    }
+
+    /// Salida acumulada de la terminal (para repintarla).
+    pub fn replay(&self, id: u32) -> String {
+        self.buffers.lock().unwrap().get(&id).cloned().unwrap_or_default()
+    }
+
+    /// Detiene la terminal y olvida su salida.
+    pub fn forget(&self, id: u32) {
+        self.kill(id);
+        self.buffers.lock().unwrap().remove(&id);
     }
 
     pub fn kill(&self, id: u32) {
