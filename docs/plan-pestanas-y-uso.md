@@ -205,7 +205,7 @@ la CLI o mandar el token a un servidor equivocado.
 |---|---|---|
 | Claude | `~/.claude/.credentials.json` → `claudeAiOauth.accessToken`, `expiresAt`, `subscriptionType`. macOS: `security find-generic-password -s "Claude Code-credentials" -w`. Windows: el mismo JSON en `%USERPROFILE%\.claude` | `GET https://api.anthropic.com/api/oauth/usage` con `anthropic-beta: oauth-2025-04-20` → `five_hour`, `seven_day` |
 | Codex | **No se toca su token.** Se lanza `codex -s read-only -a on-request app-server` (oculto, 20 s) y se habla JSON-RPC: `initialize` → `initialized` → `account/rateLimits/read`. Si falla: la última instantánea `rate_limits` de los `rollout-*.jsonl` locales | — |
-| OpenCode (Go) | `opencode.db` → `account` + `account_state`, o la fila `credential`; o bien la clave `opencode-go` de `auth.json` / `OPENCODE_APIKEY` | `GET https://opencode.ai/api/go/status` con el org en su cabecera (formato: colector de Omarchy) |
+| OpenCode (Go) | `opencode.db` → `account` + `account_state`, o la fila `credential`; o bien la clave `opencode-go` de `auth.json` / `OPENCODE_APIKEY` | `GET https://opencode.ai/console/api/go/status` con el org en su cabecera (formato: colector de Omarchy) |
 | Copilot | `GH_TOKEN`/`GITHUB_TOKEN` → `oauth_token` de `hosts.yml` de gh → `gh auth token` | `GET https://api.github.com/copilot_internal/user` |
 | Antigravity, Gemini | — | Sin límites en esta fase (Antigravity solo da `/usage` en su TUI) |
 

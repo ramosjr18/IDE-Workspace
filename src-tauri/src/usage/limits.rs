@@ -338,7 +338,7 @@ impl Endpoint {
     fn url(self) -> &'static str {
         match self {
             Self::Claude => "https://api.anthropic.com/api/oauth/usage",
-            Self::OpenCode => "https://opencode.ai/api/go/status",
+            Self::OpenCode => "https://opencode.ai/console/api/go/status",
             Self::Copilot => "https://api.github.com/copilot_internal/user",
         }
     }
@@ -1105,7 +1105,7 @@ mod confidentiality_tests {
             Box::pin(async move {
                 assert!([
                     "https://api.anthropic.com/api/oauth/usage",
-                    "https://opencode.ai/api/go/status",
+                    "https://opencode.ai/console/api/go/status",
                     "https://api.github.com/copilot_internal/user"
                 ]
                 .contains(&endpoint.url()));
