@@ -734,7 +734,6 @@ fn valid_opencode_base(base: &str) -> bool {
             && u.port_or_known_default() == Some(443)
             && u.username().is_empty()
             && u.password().is_none()
-            && u.path() == "/"
             && u.query().is_none()
             && u.fragment().is_none()
     })
@@ -911,12 +910,12 @@ mod opencode_tests {
             .limits
             .is_empty());
         assert!(valid_opencode_base("https://opencode.ai"));
+        assert!(valid_opencode_base("https://opencode.ai/console"));
         for base in [
             "http://opencode.ai",
             "https://opencode.ai.evil.test",
             "https://opencode.ai@evil.test",
             "https://opencode.ai:444",
-            "https://opencode.ai/path",
             "https://evil.test",
             "https://opencode.ai?redirect=evil",
         ] {
