@@ -45,7 +45,7 @@ pub(super) fn recent_files(root: &Path) -> Vec<PathBuf> {
     out.sort();
     out
 }
-fn lines(path: &Path, mut f: impl FnMut(usize, Value)) {
+pub(super) fn lines(path: &Path, mut f: impl FnMut(usize, Value)) {
     let Ok(file) = File::open(path) else { return };
     for (i, line) in BufReader::new(file).lines().enumerate() {
         if let Ok(line) = line {
