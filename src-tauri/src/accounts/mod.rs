@@ -167,6 +167,17 @@ pub async fn scope<F: std::future::Future>(acc: Account, f: F) -> F::Output {
     ACTIVE.scope(acc, f).await
 }
 
+/// Ejecuta `f` en un hilo aparte (spawn_blocking) conservando la cuenta activa.
+pub async fn blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> Option<R> {
+    let acc = active();
+    tauri::async_runtime::spawn_blocking(move || match acc {
+        Some(a) => scope_sync(a, f),
+        None => f(),
+    })
+    .await
+    .ok()
+}
+
 pub fn scope_sync<R>(acc: Account, f: impl FnOnce() -> R) -> R {
     let prev = ACTIVE_THREAD.with(|a| a.replace(Some(acc)));
     let out = f();
