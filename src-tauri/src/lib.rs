@@ -9,6 +9,7 @@
 //!   workflows.rs  → formas de trabajar (instrucciones que se añaden al agente del chat)
 //!   workspace.rs  → panel derecho: árbol de archivos y archivo que se está editando
 
+mod accounts;
 mod agents;
 mod council;
 mod env;
