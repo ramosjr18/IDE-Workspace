@@ -98,7 +98,7 @@ Se activa o desactiva en el diálogo de convocar, que también calcula cuántas 
 
 Al aprobar, el documento se guarda numerado en el repo (por ejemplo `docs/adr/0004-politica-de-versionado.md`) y en el chat aparece un resumen con los acuerdos y los puntos abiertos.
 
-Durante el consejo los agentes trabajan en **modo solo lectura**: leen el repo para fundamentar su opinión, pero no lo modifican (Claude `--permission-mode plan`, Codex `--sandbox read-only`, OpenCode `--agent plan`, Antigravity `--mode plan`, Copilot sin herramientas de escritura ni shell). Cada participante hace dos llamadas y el moderador una; el diálogo lo indica antes de empezar.
+Durante el consejo los agentes trabajan en **modo solo lectura**: leen el repo para fundamentar su opinión, pero no lo modifican (Claude `--permission-mode plan`, Codex `--sandbox read-only`, OpenCode `--agent plan`, Antigravity `--mode plan`, Copilot sin herramientas de escritura ni shell). Cada participante hace dos llamadas y el moderador una; con el evaluador activado hay al menos una llamada más, y hasta participantes + 2 por cada ronda extra. El diálogo lo indica antes de empezar.
 
 ## Panel de archivos (como VS Code)
 

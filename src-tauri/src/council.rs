@@ -115,7 +115,7 @@ pub struct Council {
     pub context: String,
     pub members: Vec<Member>,
     pub moderator: String,
-    /// diverge | contrast | converge | review | approved | error | cancelled
+    /// diverge | contrast | converge | judge | review | approved | error | cancelled
     pub phase: String,
     pub round: u32,
     pub cards: Vec<Card>,

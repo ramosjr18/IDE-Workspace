@@ -226,11 +226,23 @@ fn council_context(conversation_id: Option<String>) -> String {
     for m in conv.messages.iter().rev() {
         let who = if m.role == "user" { "Usuario" } else { m.agent_name.as_deref().unwrap_or("Asistente") };
         let line = format!("[{who}]: {}", m.text.trim());
-        total += line.chars().count();
-        if total > 12_000 && !lines.is_empty() {
-            break;
+        let line_len = line.chars().count();
+        if lines.is_empty() {
+            if line_len > 12_000 {
+                let truncated: String = line.chars().skip(line_len.saturating_sub(12_000)).collect();
+                lines.push(truncated);
+                break;
+            } else {
+                total += line_len;
+                lines.push(line);
+            }
+        } else {
+            if total + line_len > 12_000 {
+                break;
+            }
+            total += line_len;
+            lines.push(line);
         }
-        lines.push(line);
     }
     lines.reverse();
     lines.join("\n\n")
