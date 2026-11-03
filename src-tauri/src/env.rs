@@ -112,6 +112,10 @@ pub fn child_env() -> HashMap<String, String> {
         env.insert("AGENTES_TOKEN".into(), l.token.clone());
     }
     env.insert("PATH".into(), path);
+    // Cuenta activa de la tarea (varias cuentas por CLI): CLAUDE_CONFIG_DIR, CODEX_HOME…
+    for (k, v) in crate::accounts::active_env() {
+        env.insert(k, v);
+    }
     env
 }
 

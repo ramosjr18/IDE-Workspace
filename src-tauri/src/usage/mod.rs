@@ -41,7 +41,12 @@ pub struct Model {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageRecord {
+    /// `codex` (cuenta principal) o `codex:cuenta-2`.
     pub id: String,
+    /// Id de la CLI (el mismo que list_agents).
+    pub cli: String,
+    /// Nombre de la cuenta; `None` = principal.
+    pub account: Option<String>,
     pub name: String,
     pub plan: Option<String>,
     pub status: UsageStatus,
@@ -57,6 +62,8 @@ impl UsageRecord {
     fn empty(id: &str, name: &str) -> Self {
         Self {
             id: id.into(),
+            cli: id.into(),
+            account: None,
             name: name.into(),
             plan: None,
             status: UsageStatus::NoData,
@@ -79,27 +86,56 @@ pub struct UsageState {
 
 async fn collect(state: &UsageState) -> Vec<UsageRecord> {
     // PATH discovery may launch the login shell; keep it off the main thread.
-    let records: Vec<UsageRecord> = tauri::async_runtime::spawn_blocking(|| {
+    // Una entrada por cuenta de cada CLI instalada (la principal y las de data_dir()/cuentas).
+    let records: Vec<(crate::accounts::Account, UsageRecord)> = tauri::async_runtime::spawn_blocking(|| {
         crate::agents::AGENTS
             .iter()
             .filter(|a| crate::env::which(a.cmd).is_some())
-            .map(|a| UsageRecord::empty(a.id, a.name))
+            .flat_map(|a| {
+                crate::accounts::list(a.id).into_iter().map(move |acc| {
+                    let mut r = UsageRecord::empty(a.id, a.name);
+                    if let Some(n) = &acc.name {
+                        r.id = acc.id.clone();
+                        r.account = Some(n.clone());
+                        r.name = format!("{} · {n}", a.name);
+                    }
+                    (acc, r)
+                })
+            })
             .collect()
     })
     .await
     .unwrap_or_default();
-    futures::future::join_all(records.into_iter().map(|mut record| async move {
-        let fallback = record.clone();
-        let mut record = tauri::async_runtime::spawn_blocking(move || {
-            local::collect(&mut record);
+    futures::future::join_all(records.into_iter().map(|(acc, record)| async move {
+        crate::accounts::scope(acc, async move {
+            let fallback = record.clone();
+            let mut record = crate::accounts::blocking(move || {
+                let mut record = record;
+                local::collect(&mut record);
+                record
+            })
+            .await
+            .unwrap_or(fallback);
+            state.limits.collect(&mut record).await;
             record
         })
         .await
-        .unwrap_or(fallback);
-        state.limits.collect(&mut record).await;
-        record
     }))
     .await
+}
+
+/// Carga de cada cuenta (límite más alto y si tiene sesión) para elegir cuenta por cuota.
+pub async fn loads(state: &UsageState) -> Vec<crate::accounts::Load> {
+    state
+        .read(false, collect(state))
+        .await
+        .iter()
+        .map(|r| crate::accounts::Load {
+            account: r.id.clone(),
+            worst: r.limits.iter().map(|l| l.percent).fold(0.0, f64::max),
+            usable: !matches!(r.status, UsageStatus::NoSession | UsageStatus::Expired),
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -138,7 +174,9 @@ mod tests {
         assert_eq!(value["status"], "no_data");
         assert!(value.get("updatedAt").is_some());
         assert!(value["today"]["prompts"].is_null());
-        assert_eq!(value.as_object().unwrap().len(), 11);
+        assert_eq!(value.as_object().unwrap().len(), 13);
+        assert_eq!(value["cli"], "claude");
+        assert!(value["account"].is_null());
     }
 }
 

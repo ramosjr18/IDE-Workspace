@@ -79,10 +79,10 @@ impl Default for LimitsState {
 }
 impl LimitsState {
     pub(super) async fn collect(&self, r: &mut UsageRecord) {
-        if !["codex", "claude", "opencode", "copilot"].contains(&r.id.as_str()) {
+        if !["codex", "claude", "opencode", "copilot"].contains(&r.cli.as_str()) {
             return;
         }
-        let id = r.id.clone();
+        let id = r.cli.clone();
         self.collect_with(r, async {
             match id.as_str() {
                 "codex" => codex().await,
@@ -271,7 +271,7 @@ async fn codex() -> Probe {
     if let Ok(probe) = codex_rpc().await {
         return probe;
     }
-    tauri::async_runtime::spawn_blocking(|| {
+    crate::accounts::blocking(|| {
         let mut latest: Option<(String, Probe)> = None;
         for path in super::local::recent_files(&super::local::codex_dir().join("sessions")) {
             if !path
@@ -300,7 +300,7 @@ async fn codex() -> Probe {
             .unwrap_or_else(|| Probe::failed(Failure::Unavailable))
     })
     .await
-    .unwrap_or_else(|_| Probe::failed(Failure::Unavailable))
+    .unwrap_or_else(|| Probe::failed(Failure::Unavailable))
 }
 
 #[cfg(test)]
@@ -506,8 +506,9 @@ async fn claude_credentials() -> Result<ClaudeOauth, Failure> {
             .map(|v| v.oauth)
             .map_err(|_| Failure::NoSession);
     }
+    // El Llavero solo guarda la cuenta principal; las extra se leen de su carpeta (pendiente de verificar en macOS).
     #[cfg(target_os = "macos")]
-    {
+    if crate::accounts::active().and_then(|a| a.dir).is_none() {
         let mut cmd = Command::new("security");
         cmd.args([
             "find-generic-password",
@@ -863,9 +864,9 @@ fn opencode_limits(v: &Value) -> Result<Probe, Failure> {
     Ok(probe)
 }
 async fn opencode(state: &LimitsState, transport: &dyn Transport) -> Result<Probe, Failure> {
-    let account = tauri::async_runtime::spawn_blocking(opencode_account)
+    let account = crate::accounts::blocking(opencode_account)
         .await
-        .map_err(|_| Failure::Unavailable)?
+        .ok_or(Failure::Unavailable)?
         .ok_or(Failure::NoSession)?;
     if !valid_opencode_base(&account.base) {
         return Err(Failure::Unavailable);

@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 pub(super) fn claude_dir() -> PathBuf {
+    if let Some(d) = crate::accounts::active().and_then(|a| a.claude_dir()) {
+        return d;
+    }
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::env::home().join(".claude"))
@@ -134,17 +137,17 @@ impl Stats {
 }
 
 pub(super) fn collect(r: &mut UsageRecord) {
-    if r.id == "opencode" {
+    if r.cli == "opencode" {
         opencode(&opencode_db(), Local::now().date_naive()).apply(r);
     }
-    if r.id == "codex" {
+    if r.cli == "codex" {
         codex(
             &recent_files(&codex_dir().join("sessions")),
             Local::now().date_naive(),
         )
         .apply(r);
     }
-    if r.id == "claude" {
+    if r.cli == "claude" {
         claude(
             &recent_files(&claude_dir().join("projects")),
             Local::now().date_naive(),
@@ -219,6 +222,9 @@ mod tests {
     }
 }
 pub(super) fn codex_dir() -> PathBuf {
+    if let Some(d) = crate::accounts::active().and_then(|a| a.codex_dir()) {
+        return d;
+    }
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::env::home().join(".codex"))
@@ -301,6 +307,9 @@ fn codex_fixture() {
     assert_eq!(r.models[1].tokens, 50);
 }
 pub(super) fn opencode_db() -> PathBuf {
+    if let Some(d) = crate::accounts::active().and_then(|a| a.opencode_data()) {
+        return d.join("opencode/opencode.db");
+    }
     dirs::data_local_dir()
         .unwrap_or_else(|| crate::env::home().join(".local/share"))
         .join("opencode/opencode.db")
