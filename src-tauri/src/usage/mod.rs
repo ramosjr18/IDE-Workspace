@@ -146,6 +146,13 @@ pub async fn get_usage(
     Ok(state.read(force, collect(&state)).await)
 }
 impl UsageState {
+    /// Olvida la caché (p. ej. al añadir o quitar una cuenta).
+    pub fn invalidate(&self) {
+        if let Ok(mut c) = self.cache.try_lock() {
+            *c = None;
+        }
+    }
+
     async fn read(
         &self,
         force: bool,

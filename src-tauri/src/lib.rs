@@ -187,6 +187,7 @@ async fn chat(
     agent: String,
     message: String,
     workflow: Option<String>,
+    account: Option<String>,
 ) -> Result<ChatReply, String> {
     let ag = agents::get(&agent).ok_or_else(|| format!("Agente desconocido: {agent}"))?;
     if message.trim().is_empty() {
@@ -201,27 +202,62 @@ async fn chat(
     if !key.is_empty() && !busy.0.lock().unwrap().insert(key.clone()) {
         return Err("Esta conversación ya está esperando una respuesta".into());
     }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    running.0.lock().unwrap().insert(request_id.clone(), tx);
     let on_step = |step: &stream::Step| {
         let _ = app.emit("agent-step", StepEvent { request_id: &request_id, step });
     };
-    // Forma de trabajar y nota del lanzador: van en el prompt, no se guardan en la conversación.
-    let mut prompt = agents::build_prompt(ag, &previous, &message);
-    if let Some(w) = workflow.as_deref().and_then(workflows::get).filter(|w| !w.instructions.is_empty()) {
-        prompt = format!("{}
-
-{prompt}", w.instructions);
+    // Cuenta: la indicada, o «auto» (la de más cuota libre). Si se agota, la siguiente con saldo;
+    // sin ninguna en esta CLI, otra CLI con cuota (docs/plan-cuentas.md §6).
+    let fixed = account.as_deref().filter(|a| *a != "auto").and_then(accounts::get);
+    let loads = if fixed.is_some() { Vec::new() } else { usage::loads(&app.state::<usage::UsageState>()).await };
+    let mut tried: Vec<String> = Vec::new();
+    let mut relays: Vec<String> = Vec::new();
+    let mut used = ag;
+    let mut outcome: Result<agents::RunResult, String> = Err("Sin cuentas disponibles".into());
+    for _ in 0..8 {
+        let next = match &fixed {
+            Some(a) if tried.is_empty() => Some((ag, a.clone())),
+            Some(_) => None,
+            None => std::iter::once(ag.id)
+                .chain(accounts::FALLBACK.iter().copied().filter(|c| *c != ag.id))
+                .filter_map(agents::get)
+                .find_map(|cand| accounts::pick(cand.id, &loads, &tried).map(|a| (cand, a))),
+        };
+        // Ninguna por debajo del umbral: la principal de la CLI elegida (que dé su propio error si no puede).
+        let Some((cand, acc)) = next.or_else(|| tried.is_empty().then(|| (ag, accounts::Account::principal(ag.id)))) else { break };
+        tried.push(acc.id.clone());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        running.0.lock().unwrap().insert(request_id.clone(), tx);
+        // Forma de trabajar y nota del lanzador: van en el prompt, no se guardan en la conversación.
+        let mut prompt = agents::build_prompt(cand, &previous, &message);
+        if let Some(w) = workflow.as_deref().and_then(workflows::get).filter(|w| !w.instructions.is_empty()) {
+            prompt = format!("{}\n\n{prompt}", w.instructions);
+        }
+        if env::launcher_ready() {
+            prompt = format!("{}\n\n{prompt}", workflows::LAUNCHER_NOTE);
+        }
+        outcome = accounts::scope(acc.clone(), agents::run(cand, &prompt, &cwd, on_step, rx)).await;
+        used = cand;
+        // El aviso de límite puede llegar como error o como respuesta corta (p. ej. Claude en stream-json).
+        let failed_text = match &outcome {
+            Err(e) => Some(e.as_str()),
+            Ok(r) if r.text.chars().count() < 600 => Some(r.text.as_str()),
+            Ok(_) => None,
+        };
+        match failed_text.and_then(|t| accounts::exhaustion::detect(cand.id, t, 1)) {
+            Some(x) if fixed.is_none() => {
+                relays.push(format!("{} ({}): {}", cand.name, acc.label(), x.reason));
+                outcome = Err(x.reason);
+            }
+            _ => break,
+        }
     }
-    if env::launcher_ready() {
-        prompt = format!("{}
-
-{prompt}", workflows::LAUNCHER_NOTE);
-    }
-    let result = agents::run(ag, &prompt, &cwd, on_step, rx).await;
     running.0.lock().unwrap().remove(&request_id);
     busy.0.lock().unwrap().remove(&key);
-    let result = result?;
+    let mut result = outcome?;
+    let account_used = tried.last().and_then(|id| accounts::get(id)).and_then(|a| a.name);
+    if !relays.is_empty() {
+        result.text = format!("*Relevo de cuenta: {}.*\n\n{}", relays.join(" · "), result.text);
+    }
     // Solo se guarda el intercambio si el agente respondió bien.
     let conv = store::append(
         conversation_id.as_deref(),
@@ -231,8 +267,11 @@ async fn chat(
             store::Message {
                 role: "assistant".into(),
                 text: result.text,
-                agent: Some(ag.id.into()),
-                agent_name: Some(ag.name.into()),
+                agent: Some(used.id.into()),
+                agent_name: Some(match &account_used {
+                    Some(n) => format!("{} · {n}", used.name),
+                    None => used.name.into(),
+                }),
                 ts: String::new(),
                 steps: steps_for_storage(result.steps),
             },
@@ -409,6 +448,7 @@ fn term_start(
     action: String,
     cols: u16,
     rows: u16,
+    account: Option<String>,
 ) -> Result<u32, String> {
     let ag = agents::get(&agent).ok_or("Agente desconocido")?;
     if action != "install" && action != "login" {
@@ -416,7 +456,42 @@ fn term_start(
     }
     let (command, shell, args) = agents::terminal_command(ag, &action);
     let file = env::which(&shell).unwrap_or_else(|| PathBuf::from(&shell));
-    terms.start(app, term::Job::new(command, file, args, env::home()), cols, rows)
+    let mut job = term::Job::new(command, file, args, env::home());
+    // Iniciar sesión en una cuenta extra: la CLI guarda la sesión en la carpeta de esa cuenta.
+    if let Some(acc) = account.as_deref().and_then(accounts::get) {
+        job.env = acc.env();
+    }
+    terms.start(app, job, cols, rows)
+}
+
+#[derive(Serialize)]
+struct CliAccounts {
+    cli: String,
+    supported: bool,
+    accounts: Vec<accounts::Account>,
+}
+
+/// Cuentas de cada CLI (la principal siempre está).
+#[tauri::command]
+fn accounts_list() -> Vec<CliAccounts> {
+    agents::AGENTS
+        .iter()
+        .map(|a| CliAccounts { cli: a.id.into(), supported: accounts::supports_accounts(a.id), accounts: accounts::list(a.id) })
+        .collect()
+}
+
+#[tauri::command]
+fn account_add(usage: State<'_, usage::UsageState>, cli: String, name: String) -> Result<accounts::Account, String> {
+    let acc = accounts::add(&cli, name.trim())?;
+    usage.invalidate();
+    Ok(acc)
+}
+
+#[tauri::command]
+fn account_remove(usage: State<'_, usage::UsageState>, id: String) -> Result<(), String> {
+    accounts::remove(&id)?;
+    usage.invalidate();
+    Ok(())
 }
 
 /// Shell interactiva de la pestaña Terminal, en la carpeta del proyecto (o en la de usuario si no hay).
@@ -458,20 +533,25 @@ async fn pane_launch(
     branch: Option<String>,
     args: Vec<String>,
     brief: Option<String>,
+    account: Option<String>,
 ) -> Result<panes::Pane, String> {
     let cwd = current.get()?.to_string_lossy().to_string();
-    let req = panes::LaunchRequest { cwd, cli, name, worktree, branch, args, stdin: brief };
-    tauri::async_runtime::spawn_blocking(move || panes::launch(&app, req)).await.map_err(|e| e.to_string())?
+    let req = panes::LaunchRequest { cwd, cli, name, worktree, branch, args, stdin: brief, account };
+    let loads = usage::loads(&app.state::<usage::UsageState>()).await;
+    tauri::async_runtime::spawn_blocking(move || panes::launch(&app, req, &loads)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn pane_kill(terms: State<'_, term::Terminals>, id: u32) {
-    terms.kill(id)
+fn pane_kill(terms: State<'_, term::Terminals>, panes: State<'_, Arc<panes::Panes>>, id: u32) {
+    panes.stop(&terms, id)
 }
 
 #[tauri::command]
 fn pane_close(app: AppHandle, terms: State<'_, term::Terminals>, panes: State<'_, Arc<panes::Panes>>, id: u32) {
-    terms.forget(id);
+    panes.stop(&terms, id);
+    if let Some(t) = panes.term_of(id) {
+        terms.forget(t);
+    }
     panes.remove(id);
     let _ = app.emit("panes-changed", ());
 }
@@ -549,6 +629,9 @@ pub fn run() {
             term_shell,
             term_replay,
             list_workflows,
+            accounts_list,
+            account_add,
+            account_remove,
             panes_list,
             pane_launch,
             pane_kill,

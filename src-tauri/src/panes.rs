@@ -4,6 +4,7 @@
 //! `agentes run` habla con la app por TCP en 127.0.0.1 (puerto aleatorio) y solo se atiende con el
 //! token de esta sesión, que la app pasa en el entorno a los procesos que lanza ella.
 
+use crate::accounts::{self, Account};
 use crate::env::{self, which};
 use crate::store::data_dir;
 use crate::term::{Job, Terminals};
@@ -18,7 +19,10 @@ use tokio::sync::Notify;
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Pane {
+    /// Id del panel (estable aunque haya relevo de cuenta).
     pub id: u32,
+    /// Terminal (PTY) actual del panel: cambia en cada relevo.
+    pub term: u32,
     #[serde(skip)]
     key: String,
     /// Carpeta raíz del repo (la del proyecto), para agrupar los paneles por proyecto.
@@ -35,11 +39,32 @@ pub struct Pane {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub log: String,
+    /// Cuenta con la que trabaja ahora (`None` = principal).
+    pub account: Option<String>,
+    /// Relevos hechos: «Codex (principal) → Codex (cuenta-2): Cuota de Codex agotada».
+    pub relays: Vec<String>,
+}
+
+/// Lo necesario para relanzar el carril en otra cuenta o CLI.
+#[derive(Clone)]
+struct Spec {
+    /// Id de la CLI (para cuentas y detección).
+    cli: String,
+    /// Lo que se ejecuta: el nombre de la CLI o la ruta que se indicó.
+    exe: String,
+    args: Vec<String>,
+    stdin: Option<String>,
+    dir: PathBuf,
+    tried: Vec<String>,
 }
 
 #[derive(Default)]
 pub struct Panes {
     list: Mutex<Vec<Pane>>,
+    specs: Mutex<std::collections::HashMap<u32, Spec>>,
+    /// Paneles detenidos a mano: al salir no se relevan.
+    stopped: Mutex<std::collections::HashSet<u32>>,
+    next: std::sync::atomic::AtomicU32,
     changed: Notify,
 }
 
@@ -60,6 +85,9 @@ pub struct LaunchRequest {
     /// Texto para la entrada estándar de la CLI (el brief).
     #[serde(default)]
     pub stdin: Option<String>,
+    /// Nombre de cuenta, `auto` (por defecto: la de más cuota libre) o `principal`.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 fn now() -> String {
@@ -170,6 +198,7 @@ impl Panes {
 
     fn finish(&self, key: &str, code: i32) {
         if let Some(p) = self.list.lock().unwrap().iter_mut().find(|p| p.key == key) {
+            self.specs.lock().unwrap().remove(&p.id);
             p.status = if code == 0 { "done".into() } else { "error".into() };
             p.exit_code = Some(code);
             p.ended_at = Some(now());
@@ -179,6 +208,20 @@ impl Panes {
 
     pub fn remove(&self, id: u32) {
         self.list.lock().unwrap().retain(|p| p.id != id);
+        self.specs.lock().unwrap().remove(&id);
+    }
+
+    /// Terminal actual de un panel.
+    pub fn term_of(&self, id: u32) -> Option<u32> {
+        self.get(id).map(|p| p.term)
+    }
+
+    /// Detiene el panel sin relevo.
+    pub fn stop(&self, terms: &Terminals, id: u32) {
+        self.stopped.lock().unwrap().insert(id);
+        if let Some(t) = self.term_of(id) {
+            terms.kill(t);
+        }
     }
 
     /// Espera a que el panel termine y devuelve cómo acabó.
@@ -194,8 +237,167 @@ impl Panes {
     }
 }
 
-/// Lanza una CLI en un panel nuevo.
-pub fn launch(app: &AppHandle, req: LaunchRequest) -> Result<Pane, String> {
+/// Elige la cuenta (y, si ninguna de esa CLI tiene cuota, otra CLI) para un carril.
+/// Devuelve la CLI, sus argumentos y la cuenta.
+/// `stdin`: lo que recibe la CLI por la entrada estándar; `brief`: el texto del carril, para otra CLI.
+#[allow(clippy::too_many_arguments)]
+fn choose(cli: &str, args: &[String], stdin: Option<&str>, brief: Option<&str>, wanted: Option<&str>, loads: &[accounts::Load], tried: &[String]) -> Option<(String, Vec<String>, Option<String>, Account)> {
+    let same = |a: Account| (cli.to_string(), args.to_vec(), stdin.map(str::to_string), a);
+    match wanted.filter(|w| !w.is_empty() && *w != "auto") {
+        Some("principal") => return (!tried.contains(&cli.to_string())).then(|| same(Account::principal(cli))),
+        Some(name) => {
+            let id = format!("{cli}:{name}");
+            return accounts::get(&id).filter(|_| !tried.contains(&id)).map(same);
+        }
+        None => {}
+    }
+    if let Some(a) = accounts::pick(cli, loads, tried) {
+        return Some(same(a));
+    }
+    // Otra CLI con cuota: sus argumentos por defecto con el mismo brief.
+    let brief = brief?;
+    for other in accounts::FALLBACK.iter().filter(|c| **c != cli) {
+        if which(other).is_none() {
+            continue;
+        }
+        let Some(a) = accounts::pick(other, loads, tried) else { continue };
+        let (preset, at) = accounts::preset(other)?;
+        let mut args: Vec<String> = preset.iter().map(|s| s.to_string()).collect();
+        let stdin = match at {
+            Some(i) => {
+                args[i] = brief.to_string();
+                None
+            }
+            None => Some(brief.to_string()),
+        };
+        return Some((other.to_string(), args, stdin, a));
+    }
+    None
+}
+
+/// El brief de un carril: lo que llegó por la entrada estándar o, si no, el argumento más largo.
+fn brief_of(args: &[String], stdin: Option<&str>) -> Option<String> {
+    stdin.map(str::to_string).or_else(|| args.iter().filter(|a| a.chars().count() > 80).max_by_key(|a| a.len()).cloned())
+}
+
+/// Arranca la CLI en un PTY. `relay`: id del panel que se releva (mantiene el id).
+fn start(app: &AppHandle, pane: Pane, spec: Spec, acc: &Account) -> Result<Pane, String> {
+    let panes = app.state::<Arc<Panes>>().inner().clone();
+    let cli_path = if Path::new(&spec.exe).is_file() { PathBuf::from(&spec.exe) } else { which(&spec.exe).ok_or_else(|| format!("No encuentro «{}» en el PATH", spec.exe))? };
+    let mut job_env = acc.env();
+    let (file, args) = match spec.stdin.as_deref().filter(|s| !s.is_empty()) {
+        Some(text) => {
+            let briefs = data_dir().join("briefs");
+            let _ = std::fs::create_dir_all(&briefs);
+            let brief = briefs.join(format!("{}.md", pane.key));
+            std::fs::write(&brief, text).map_err(|e| e.to_string())?;
+            job_env.push(("AGENTES_BRIEF".to_string(), brief.to_string_lossy().to_string()));
+            #[cfg(unix)]
+            {
+                let mut a = vec!["-c".to_string(), "exec \"$0\" \"$@\" < \"$AGENTES_BRIEF\"".to_string(), cli_path.to_string_lossy().to_string()];
+                a.extend(spec.args.iter().cloned());
+                (PathBuf::from("/bin/sh"), a)
+            }
+            #[cfg(windows)]
+            {
+                let line = std::iter::once(cli_path.to_string_lossy().to_string()).chain(spec.args.iter().cloned()).map(|s| quote_cmd(&s)).collect::<Vec<_>>().join(" ");
+                let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
+                (PathBuf::from(comspec), vec!["/D".into(), "/S".into(), "/C".into(), format!("\"{line} < {}\"", quote_cmd(&brief.to_string_lossy()))])
+            }
+        }
+        None => (cli_path.clone(), spec.args.clone()),
+    };
+    let shown = &pane.command;
+    let mut job = Job::new(format!("{shown}{}", if spec.stdin.is_some() { " < brief" } else { "" }), file, args, spec.dir.clone());
+    job.env = job_env;
+    job.log = Some(PathBuf::from(&pane.log));
+    let (p2, k2, app2, id) = (panes.clone(), pane.key.clone(), app.clone(), pane.id);
+    job.on_exit = Some(Box::new(move |code| {
+        // ¿Se quedó sin cuota? Relevo en el mismo panel; si no, termina.
+        let tail = std::fs::read_to_string(p2.get(id).map(|p| p.log).unwrap_or_default()).unwrap_or_default();
+        let cli = p2.specs.lock().unwrap().get(&id).map(|s| s.cli.clone()).unwrap_or_default();
+        let stopped = p2.stopped.lock().unwrap().remove(&id);
+        match accounts::exhaustion::detect(&cli, &tail, code).filter(|_| !stopped) {
+            Some(x) => {
+                let app3 = app2.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = relay(&app3, id, &x.reason, &tail).await {
+                        let panes = app3.state::<Arc<Panes>>().inner().clone();
+                        if let Some(p) = panes.list.lock().unwrap().iter_mut().find(|p| p.id == id) {
+                            p.relays.push(format!("Sin relevo posible: {e}"));
+                        }
+                        let key = panes.get(id).map(|p| p.key).unwrap_or_default();
+                        panes.finish(&key, code);
+                    }
+                    let _ = app3.emit("panes-changed", ());
+                });
+            }
+            None => {
+                p2.finish(&k2, code);
+                let _ = app2.emit("panes-changed", ());
+            }
+        }
+    }));
+    let terms = app.state::<Terminals>();
+    let term = terms.start(app.clone(), job, 120, 32)?;
+    let mut pane = pane;
+    pane.term = term;
+    panes.specs.lock().unwrap().insert(pane.id, spec);
+    {
+        let mut list = panes.list.lock().unwrap();
+        match list.iter_mut().find(|p| p.id == pane.id) {
+            Some(p) => *p = pane.clone(),
+            None => list.push(pane.clone()),
+        }
+    }
+    let _ = app.emit("panes-changed", ());
+    Ok(pane)
+}
+
+/// Relanza un carril agotado con otra cuenta (u otra CLI), en el mismo worktree y el mismo panel.
+async fn relay(app: &AppHandle, id: u32, reason: &str, log: &str) -> Result<(), String> {
+    let panes = app.state::<Arc<Panes>>().inner().clone();
+    let pane = panes.get(id).ok_or("Panel cerrado")?;
+    let spec = panes.specs.lock().unwrap().get(&id).cloned().ok_or("Sin datos del carril")?;
+    let loads = crate::usage::loads(&app.state::<crate::usage::UsageState>()).await;
+    let original = brief_of(&spec.args, spec.stdin.as_deref());
+    let mut tried = spec.tried.clone();
+    // La cuenta agotada no se vuelve a probar en este carril.
+    tried.push(pane.account.as_ref().map(|n| format!("{}:{n}", spec.cli)).unwrap_or_else(|| spec.cli.clone()));
+    // Brief de continuación: el original + lo que ya hay hecho.
+    let dir = spec.dir.clone();
+    let git_out = |args: &[&str]| git(&dir, args).unwrap_or_default();
+    let log_tail: String = log.lines().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+    let continuation = format!(
+        "{}\n\n---\n[Relevo de cuenta] El agente anterior se quedó sin cuota a mitad ({reason}). Continúa desde aquí en este mismo worktree; no rehagas lo que ya está.\n\nCommits recientes:\n{}\n\nCambios sin commitear:\n{}\n{}\n\nFinal de su salida:\n{}",
+        original.clone().unwrap_or_else(|| "(sin brief)".into()),
+        git_out(&["log", "--oneline", "-15"]),
+        git_out(&["status", "--short"]),
+        git_out(&["diff", "--stat"]),
+        log_tail
+    );
+    // Si el brief iba en un argumento, se sustituye ese argumento por el de continuación.
+    let (args, stdin) = match (&spec.stdin, &original) {
+        (Some(_), _) => (spec.args.clone(), Some(continuation.clone())),
+        (None, Some(o)) => (spec.args.iter().map(|a| if a == o { continuation.clone() } else { a.clone() }).collect(), None),
+        (None, None) => (spec.args.clone(), None),
+    };
+    let (cli, args, stdin, acc) = choose(&spec.cli, &args, stdin.as_deref(), Some(&continuation), None, &loads, &tried)
+        .ok_or("ninguna cuenta con cuota en ninguna CLI")?;
+    tried.push(acc.id.clone());
+    let mut next = pane.clone();
+    next.relays.push(format!("{} ({}) → {} ({}): {reason}", pane.cli, pane.account.as_deref().unwrap_or("principal"), cli, acc.label()));
+    next.cli = cli.clone();
+    next.account = acc.name.clone();
+    next.command = std::iter::once(cli.clone()).chain(args.iter().map(|a| if a.chars().count() > 80 { "<brief>".to_string() } else { a.clone() })).collect::<Vec<_>>().join(" ");
+    let exe = if cli == spec.cli { spec.exe.clone() } else { cli.clone() };
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || start(&app2, next, Spec { cli, exe, args, stdin, dir, tried }, &acc)).await.map_err(|e| e.to_string())??;
+    Ok(())
+}
+
+/// Lanza una CLI en un panel nuevo. `loads`: uso de cada cuenta (para `--account auto`).
+pub fn launch(app: &AppHandle, req: LaunchRequest, loads: &[accounts::Load]) -> Result<Pane, String> {
     let panes = app.state::<Arc<Panes>>().inner().clone();
     let cwd = PathBuf::from(&req.cwd);
     if !cwd.is_dir() {
@@ -217,6 +419,17 @@ pub fn launch(app: &AppHandle, req: LaunchRequest) -> Result<Pane, String> {
         None => (cwd.clone(), git(&cwd, &["branch", "--show-current"]).ok().filter(|b| !b.is_empty()), None),
     };
 
+    // Cuenta: la pedida o la de más cuota libre; sin ninguna, otra CLI (con el mismo brief).
+    let is_agent = crate::agents::get(&cli_name).is_some();
+    let brief = brief_of(&req.args, req.stdin.as_deref());
+    let (cli_name, args, stdin, acc) = if is_agent {
+        choose(&cli_name, &req.args, req.stdin.as_deref(), brief.as_deref(), req.account.as_deref(), loads, &[])
+            // Todas por encima del umbral y sin otra CLI: la principal (que dé su propio error).
+            .unwrap_or_else(|| (cli_name.clone(), req.args.clone(), req.stdin.clone(), Account::principal(&cli_name)))
+    } else {
+        (cli_name.clone(), req.args.clone(), req.stdin.clone(), Account::principal(&cli_name))
+    };
+
     let key = uuid::Uuid::new_v4().to_string();
     let log = if worktree.is_some() {
         dir.join("agente.log")
@@ -225,51 +438,19 @@ pub fn launch(app: &AppHandle, req: LaunchRequest) -> Result<Pane, String> {
         let _ = std::fs::create_dir_all(&d);
         d.join(format!("{key}.log"))
     };
-    let shown = std::iter::once(cli_name.clone()).chain(req.args.iter().cloned()).collect::<Vec<_>>().join(" ");
-    let mut job_env = Vec::new();
-    let (file, args) = match req.stdin.as_deref().filter(|s| !s.is_empty()) {
-        Some(text) => {
-            let briefs = data_dir().join("briefs");
-            let _ = std::fs::create_dir_all(&briefs);
-            let brief = briefs.join(format!("{key}.md"));
-            std::fs::write(&brief, text).map_err(|e| e.to_string())?;
-            job_env.push(("AGENTES_BRIEF".to_string(), brief.to_string_lossy().to_string()));
-            #[cfg(unix)]
-            {
-                let mut a = vec!["-c".to_string(), "exec \"$0\" \"$@\" < \"$AGENTES_BRIEF\"".to_string(), cli_path.to_string_lossy().to_string()];
-                a.extend(req.args.iter().cloned());
-                (PathBuf::from("/bin/sh"), a)
-            }
-            #[cfg(windows)]
-            {
-                let line = std::iter::once(cli_path.to_string_lossy().to_string()).chain(req.args.iter().cloned()).map(|s| quote_cmd(&s)).collect::<Vec<_>>().join(" ");
-                let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
-                (PathBuf::from(comspec), vec!["/D".into(), "/S".into(), "/C".into(), format!("\"{line} < {}\"", quote_cmd(&brief.to_string_lossy()))])
-            }
-        }
-        None => (cli_path.clone(), req.args.clone()),
-    };
-
+    let shown = std::iter::once(cli_name.clone()).chain(args.iter().map(|a| if a.chars().count() > 80 { "<brief>".to_string() } else { a.clone() })).collect::<Vec<_>>().join(" ");
     let name = req.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| match &worktree {
         Some(w) => format!("{cli_name} · {w}"),
         None => cli_name.clone(),
     });
-    let mut job = Job::new(format!("{shown}{}", if req.stdin.is_some() { " < brief" } else { "" }), file, args, dir.clone());
-    job.env = job_env;
-    job.log = Some(log.clone());
-    let (p2, k2, app2) = (panes.clone(), key.clone(), app.clone());
-    job.on_exit = Some(Box::new(move |code| {
-        p2.finish(&k2, code);
-        let _ = app2.emit("panes-changed", ());
-    }));
-    let terms = app.state::<Terminals>();
-    // Registrar antes de arrancar: si el proceso termina enseguida, `finish` lo encuentra.
-    let mut pane = Pane {
-        id: 0,
-        key: key.clone(),
+    let id = panes.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let pane = Pane {
+        id,
+        term: 0,
+        key,
         project: root.to_string_lossy().to_string(),
         name,
-        cli: cli_name,
+        cli: cli_name.clone(),
         command: shown,
         dir: dir.to_string_lossy().to_string(),
         worktree,
@@ -279,22 +460,12 @@ pub fn launch(app: &AppHandle, req: LaunchRequest) -> Result<Pane, String> {
         started_at: now(),
         ended_at: None,
         log: log.to_string_lossy().to_string(),
+        account: acc.name.clone(),
+        relays: Vec::new(),
     };
-    panes.list.lock().unwrap().push(pane.clone());
-    match terms.start(app.clone(), job, 120, 32) {
-        Ok(id) => {
-            if let Some(p) = panes.list.lock().unwrap().iter_mut().find(|p| p.key == key) {
-                p.id = id;
-                pane = p.clone();
-            }
-            let _ = app.emit("panes-changed", ());
-            Ok(pane)
-        }
-        Err(e) => {
-            panes.list.lock().unwrap().retain(|p| p.key != key);
-            Err(e)
-        }
-    }
+    let tried = vec![acc.id.clone()];
+    let exe = if Some(cli_name.as_str()) == cli_path.file_stem().and_then(|n| n.to_str()) { cli.clone() } else { cli_name.clone() };
+    start(app, pane, Spec { cli: cli_name, exe, args, stdin, dir, tried }, &acc)
 }
 
 // ---------- Servidor local para `agentes run` ----------
@@ -359,7 +530,8 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
     match env.request {
         Request::Run { req, wait } => {
             let app2 = app.clone();
-            let launched = tauri::async_runtime::spawn_blocking(move || launch(&app2, req)).await.map_err(|e| e.to_string()).and_then(|r| r);
+            let loads = crate::usage::loads(&app.state::<crate::usage::UsageState>()).await;
+            let launched = tauri::async_runtime::spawn_blocking(move || launch(&app2, req, &loads)).await.map_err(|e| e.to_string()).and_then(|r| r);
             match launched {
                 Ok(p) if wait => Reply { ok: true, pane: panes.wait(p.id).await, ..Default::default() },
                 Ok(p) => Reply { ok: true, pane: Some(p), ..Default::default() },
@@ -375,7 +547,7 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
             None => err(format!("No hay ningún panel {id}")),
         },
         Request::Kill { id } => {
-            app.state::<Terminals>().kill(id);
+            panes.stop(&app.state::<Terminals>(), id);
             Reply { ok: true, pane: panes.get(id), ..Default::default() }
         }
     }
@@ -458,13 +630,16 @@ const HELP: &str = "Lanza agentes en paneles de la vista «Agentes» de Chat de 
 
 Uso:
   agentes run --cli <cli> [--worktree <nombre>] [--branch <rama>] [--name <título>]
-              [--brief <archivo>] [--wait] [-- <argumentos de la CLI>]
+              [--account auto|principal|<nombre>] [--brief <archivo>] [--wait] [-- <argumentos>]
   agentes status            paneles de este proyecto (id, estado, worktree, log)
   agentes wait <id>         espera a que termine el panel y sale con su código
   agentes kill <id>         detiene el panel
 
 --worktree crea (o reutiliza) .claude/worktrees/<nombre> en una rama nueva desde HEAD
 (agentes/<nombre> si no se indica --branch) y ejecuta la CLI ahí.
+--account: por defecto «auto», la cuenta de esa CLI con más cuota libre (por debajo del 90 %);
+si ninguna tiene cuota, otra CLI. Si la cuenta se agota a mitad, el panel se releva solo en el
+mismo worktree con la siguiente cuenta con saldo y un brief de continuación.
 --brief <archivo> (o «-» entre los argumentos con el brief en la entrada estándar) se pasa
 a la CLI por su entrada estándar. La salida queda en <worktree>/agente.log.
 
@@ -481,7 +656,10 @@ fn print_pane(p: &Pane) {
         "done" => "terminado (0)".to_string(),
         _ => format!("error ({})", p.exit_code.unwrap_or(-1)),
     };
-    println!("{}\t{}\t{}\t{}\t{}", p.id, state, p.name, p.worktree.as_deref().unwrap_or("-"), p.log);
+    println!("{}\t{}\t{}\t{}\t{}\t{}", p.id, state, p.name, p.account.as_deref().unwrap_or("principal"), p.worktree.as_deref().unwrap_or("-"), p.log);
+    for r in &p.relays {
+        println!("\trelevo: {r}");
+    }
 }
 
 fn request(json: serde_json::Value) -> Result<Reply2, String> {
@@ -516,6 +694,10 @@ struct Reply2 {
 #[serde(rename_all = "camelCase")]
 struct PaneOut {
     id: u32,
+    #[serde(default)]
+    account: Option<String>,
+    #[serde(default)]
+    relays: Vec<String>,
     name: String,
     status: String,
     exit_code: Option<i32>,
@@ -527,6 +709,9 @@ impl From<PaneOut> for Pane {
     fn from(p: PaneOut) -> Self {
         Pane {
             id: p.id,
+            term: 0,
+            account: p.account,
+            relays: p.relays,
             key: String::new(),
             project: String::new(),
             name: p.name,
@@ -585,6 +770,7 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
                     "--worktree" => v["worktree"] = val(&mut it, "--worktree")?.into(),
                     "--branch" => v["branch"] = val(&mut it, "--branch")?.into(),
                     "--name" => v["name"] = val(&mut it, "--name")?.into(),
+                    "--account" => v["account"] = val(&mut it, "--account")?.into(),
                     "--brief" => {
                         let f = val(&mut it, "--brief")?;
                         brief = Some(std::fs::read_to_string(&f).map_err(|e| format!("No se pudo leer {f}: {e}"))?);
@@ -625,7 +811,7 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
             if list.is_empty() {
                 println!("No hay paneles en este proyecto.");
             }
-            println!("id\testado\tnombre\tworktree\tlog");
+            println!("id\testado\tnombre\tcuenta\tworktree\tlog");
             for p in list {
                 print_pane(&p.into());
             }
