@@ -126,6 +126,15 @@
   #launchDialog .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
   #launchError { color: var(--error); font-size: 13px; margin: 0; }
   #workflowDesc { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+  #account { margin-top: 6px; }
+  .acc-row { display: flex; align-items: center; gap: 8px; padding: 6px 16px 6px 32px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .acc-row .n { margin-right: auto; }
+  .acc-row button { font-size: 12px; padding: 3px 9px; }
+  .acc-add { display: flex; gap: 6px; padding: 6px 16px 10px 32px; border-bottom: 1px solid var(--border); }
+  .acc-add input { flex: 1; font-size: 13px; padding: 4px 8px; }
+  .acc-add button { font-size: 12px; padding: 3px 9px; }
+  .m-head .acc { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  .m-head .relay { color: var(--warn); font-size: 11.5px; white-space: nowrap; }
   /* Uso de cada CLI */
   #usageView .usage-list { flex: 1; overflow-y: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-content: start; }
   .u-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--bg); min-width: 0; }
@@ -364,6 +373,7 @@
   <section>
     <h3>Agente</h3>
     <select id="agent" aria-label="Agente"></select>
+    <select id="account" aria-label="Cuenta" title="Cuenta de la CLI. Auto: la que más cuota libre tenga; si se agota, la siguiente."></select>
     <div class="agent-line">
       <span id="agentStatus" class="pill checking">Comprobando…</span>
       <button id="agentAction" type="button" hidden></button>
@@ -479,7 +489,7 @@
 <dialog id="agentsDialog">
   <div class="dlg-head"><h2>Agentes</h2><button type="button" data-close>Cerrar</button></div>
   <div id="agentList"></div>
-  <p class="hint">Se usan las CLIs y las sesiones de este ordenador. «Instalar» e «Iniciar sesión» abren un terminal aquí mismo.</p>
+  <p class="hint">Se usan las CLIs y las sesiones de este ordenador. «Instalar» e «Iniciar sesión» abren un terminal aquí mismo. Con <b>+ Cuenta</b> añades otra cuenta de la misma CLI (otra carpeta de sesión, no comparte nada con la principal); la app reparte el trabajo entre cuentas según su cuota y, si una se agota, sigue con la siguiente.</p>
   <div class="cli">
     <button id="installCli" type="button">Instalar comando «agentes»</button>
     <p id="cliResult">Para abrir la app desde la terminal dentro de un repo, como <code>claude</code> o <code>code .</code></p>
@@ -532,6 +542,7 @@
         <label>Nombre <span class="muted">(opcional)</span><input id="lName" placeholder="Backend de uso"></label>
         <label>Worktree <span class="muted">.claude/worktrees/…</span><input id="lWorktree" placeholder="codex-uso" pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]*"></label>
         <label>Rama <span class="muted">(por defecto agentes/&lt;worktree&gt;)</span><input id="lBranch" placeholder="codex/uso"></label>
+        <label>Cuenta <span class="muted">auto = la de más cuota; si se agota, la siguiente</span><select id="lAccount"></select></label>
       </div>
       <label>Argumentos <span class="muted">{brief} se sustituye por el brief; si no aparece, el brief va por la entrada estándar</span><input id="lArgs" spellcheck="false"></label>
       <label>Brief <textarea id="lBrief" placeholder="Qué tiene que hacer, su zona, qué no tocar, el contrato, los tests…"></textarea></label>
@@ -741,7 +752,7 @@
     const bubble = agentBubble(agent.name, true);
     liveRequest = { id: crypto.randomUUID(), bubble };
     try {
-      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message, workflow: $('workflow').value || null });
+      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message, workflow: $('workflow').value || null, account: $('account').value || 'auto' });
       conversationId = reply.conversationId;
       store.set(convKey(), conversationId);
       // Si la CLI no dio pasos de texto, se muestra la respuesta final
@@ -985,6 +996,7 @@
     $('agentStatus').className = 'pill checking';
     $('agentStatus').textContent = 'Comprobando…';
     agents = await invoke('list_agents');
+    cliAccounts = await invoke('accounts_list').catch(() => []);
     const current = $('agent').value || store.get('agent');
     $('agent').innerHTML = '';
     for (const a of agents) {
@@ -998,10 +1010,22 @@
     renderAgentList();
   }
 
+  // Cuentas de cada CLI: [{ cli, supported, accounts: [{ id, cli, name }] }]
+  let cliAccounts = [];
+  const accountsOf = (cli) => cliAccounts.find((c) => c.cli === cli)?.accounts || [{ id: cli, cli, name: null }];
+  function fillAccounts(sel, cli, saved) {
+    sel.innerHTML = '';
+    sel.appendChild(el('option', { value: 'auto', textContent: 'Cuenta: auto (más cuota libre)' }));
+    for (const acc of accountsOf(cli)) sel.appendChild(el('option', { value: acc.name || 'principal', textContent: `Cuenta: ${acc.name || 'principal'}` }));
+    sel.value = saved && [...sel.options].some((o) => o.value === saved) ? saved : 'auto';
+  }
+
   function renderSelectedAgent() {
     const a = agents.find((x) => x.id === $('agent').value);
     renderContext();
     if (!a) return;
+    fillAccounts($('account'), a.id, store.get(`account:${a.id}`));
+    $('account').hidden = accountsOf(a.id).length < 2 && $('account').value === 'auto';
     const s = STATUS[a.status];
     $('agentStatus').className = `pill ${a.status}`;
     $('agentStatus').textContent = s.text;
@@ -1032,13 +1056,43 @@
       btn.onclick = () => openAgentTerminal(a, s.act);
       row.append(info, pill, btn);
       $('agentList').appendChild(row);
+      const group = cliAccounts.find((c) => c.cli === a.id);
+      if (!group || a.status === 'missing') continue;
+      for (const acc of group.accounts.filter((x) => x.name)) {
+        const login = el('button', { type: 'button', textContent: 'Iniciar sesión' });
+        login.onclick = () => openAgentTerminal(a, 'login', acc);
+        const del = el('button', { type: 'button', textContent: 'Quitar' });
+        del.onclick = async () => {
+          if (!(await window.__TAURI__.dialog.ask(`¿Quitar la cuenta «${acc.name}» de ${a.name}? Se borra su sesión de este ordenador.`, { title: 'Quitar cuenta', kind: 'warning' }))) return;
+          try { await invoke('account_remove', { id: acc.id }); } catch (err) { alertMsg(err); }
+          loadAgents();
+        };
+        $('agentList').appendChild(el('div', { className: 'acc-row' }, el('span', { className: 'n', textContent: `Cuenta «${acc.name}»` }), login, del));
+      }
+      if (group.supported) {
+        const input = el('input', { placeholder: `Otra cuenta de ${a.name} (p. ej. team-2)`, spellcheck: false });
+        const add = el('button', { type: 'button', textContent: '+ Cuenta' });
+        add.onclick = async () => {
+          const name = input.value.trim();
+          if (!name) return input.focus();
+          try {
+            const acc = await invoke('account_add', { cli: a.id, name });
+            await loadAgents();
+            openAgentTerminal(a, 'login', acc);
+          } catch (err) { alertMsg(err); }
+        };
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add.click(); });
+        $('agentList').appendChild(el('div', { className: 'acc-add' }, input, add));
+      }
     }
   }
+  const alertMsg = (err) => window.__TAURI__.dialog.message(String(err), { title: 'Cuentas', kind: 'error' });
 
   $('agent').addEventListener('change', () => {
     store.set('agent', $('agent').value);
     renderSelectedAgent();
   });
+  $('account').addEventListener('change', () => store.set(`account:${$('agent').value}`, $('account').value));
   $('openAgents').addEventListener('click', () => { closeMenu(); $('agentsDialog').showModal(); });
 
   // ---------- Proyecto (carpeta donde trabajan los agentes) ----------
@@ -1171,14 +1225,14 @@
     });
   }
 
-  async function openAgentTerminal(agent, action) {
-    $('termTitle').textContent = `${action === 'install' ? 'Instalar' : 'Iniciar sesión en'} ${agent.name}`;
+  async function openAgentTerminal(agent, action, account = null) {
+    $('termTitle').textContent = `${action === 'install' ? 'Instalar' : 'Iniciar sesión en'} ${agent.name}${account ? ` · cuenta «${account.name}»` : ''}`;
     $('termDialog').showModal();
     ensureTerm();
     term.reset();
     fit.fit();
     try {
-      termId = await invoke('term_start', { agent: agent.id, action, cols: term.cols, rows: term.rows });
+      termId = await invoke('term_start', { agent: agent.id, action, cols: term.cols, rows: term.rows, account: account?.id || null });
     } catch (err) {
       term.write(`\x1b[31m${err}\x1b[0m\r\n`);
     }
@@ -2055,6 +2109,9 @@
 
   function renderPaneHead(v) {
     const p = v.pane;
+    v.acc.textContent = p.account ? `cuenta ${p.account}` : '';
+    v.relay.textContent = p.relays?.length ? `↻ ${p.relays.length}` : '';
+    v.relay.title = (p.relays || []).join('\n');
     v.el.className = `m-pane ${p.status}${v.el.classList.contains('max') ? ' max' : ''}`;
     v.title.textContent = p.name;
     v.sub.textContent = [p.branch, p.worktree ? `.claude/worktrees/${p.worktree}` : null].filter(Boolean).join(' · ') || p.command;
@@ -2069,22 +2126,23 @@
     term.loadAddon(fit);
     const body = el('div', { className: 'm-body' });
     const btn = (icon, title) => el('button', { type: 'button', className: 'icon', title }, el('i', { className: `codicon codicon-${icon}` }));
-    const v = { pane: p, term, fit, title: el('span', { className: 'title' }), sub: el('span', { className: 'sub' }), state: el('span', { className: 'state' }),
+    const v = { pane: p, term, fit, title: el('span', { className: 'title' }), acc: el('span', { className: 'acc' }), relay: el('span', { className: 'relay' }), sub: el('span', { className: 'sub' }), state: el('span', { className: 'state' }),
       stop: btn('debug-stop', 'Detener'), max: btn('screen-full', 'Maximizar (doble clic en la cabecera)'), close: btn('close', 'Cerrar el panel') };
-    const head = el('div', { className: 'm-head' }, el('span', { className: 'dot' }), v.title, v.sub, v.state, v.stop, v.max, v.close);
+    const head = el('div', { className: 'm-head' }, el('span', { className: 'dot' }), v.title, v.acc, v.relay, v.sub, v.state, v.stop, v.max, v.close);
     v.el = el('div', { className: 'm-pane' }, head, body);
     const toggleMax = () => { v.el.classList.toggle('max'); layoutMosaic(); };
     head.addEventListener('dblclick', (e) => { if (!e.target.closest('button')) toggleMax(); });
     v.max.addEventListener('click', toggleMax);
     v.stop.addEventListener('click', () => invoke('pane_kill', { id: p.id }));
-    v.close.addEventListener('click', () => {
-      if (v.pane.status === 'running' && !confirm(`«${v.pane.name}» sigue trabajando. ¿Detenerlo y cerrar el panel?`)) return;
+    v.close.addEventListener('click', async () => {
+      if (v.pane.status === 'running' && !(await window.__TAURI__.dialog.ask(`«${v.pane.name}» sigue trabajando. ¿Detenerlo y cerrar el panel?`, { title: 'Cerrar panel', kind: 'warning' }))) return;
       invoke('pane_close', { id: p.id });
     });
     $('mosaic').appendChild(v.el);
     term.open(body);
-    term.onData((data) => invoke('term_write', { id: p.id, data }));
-    term.onResize(({ cols, rows }) => invoke('term_resize', { id: p.id, cols, rows }));
+    // La terminal del panel cambia en cada relevo de cuenta: siempre la actual (v.pane.term).
+    term.onData((data) => invoke('term_write', { id: v.pane.term, data }));
+    term.onResize(({ cols, rows }) => invoke('term_resize', { id: v.pane.term, cols, rows }));
     term.registerLinkProvider({
       provideLinks(y, cb) {
         const line = term.buffer.active.getLine(y - 1)?.translateToString() || '';
@@ -2097,8 +2155,23 @@
     paneViews.set(p.id, v);
     renderPaneHead(v);
     // Lo que ya escribió antes de abrir la vista
-    invoke('term_replay', { id: p.id }).then((data) => { v.replayed = true; term.write(data); (v.pending || []).forEach((d) => term.write(d)); v.pending = null; });
+    attachTerm(v);
     return v;
+  }
+
+  // Pinta la salida guardada de la terminal actual del panel y sigue la nueva.
+  function attachTerm(v) {
+    v.attached = v.pane.term;
+    v.replayed = false;
+    v.pending = [];
+    invoke('term_replay', { id: v.pane.term }).then((data) => {
+      if (v.attached !== v.pane.term) return;
+      v.replayed = true;
+      v.term.write(data);
+      v.pending.forEach((d) => v.term.write(d));
+      v.pending = null;
+      try { invoke('term_resize', { id: v.pane.term, cols: v.term.cols, rows: v.term.rows }); } catch { /* */ }
+    });
   }
 
   async function loadPanes(reset = false) {
@@ -2111,7 +2184,12 @@
     for (const [id, v] of paneViews) if (!ids.has(id)) { v.term.dispose(); v.el.remove(); paneViews.delete(id); }
     for (const p of paneList) {
       const v = paneViews.get(p.id);
-      if (v) { v.pane = p; renderPaneHead(v); } else makePane(p);
+      if (v) {
+        v.pane = p;
+        renderPaneHead(v);
+        // Relevo: otra terminal en el mismo panel
+        if (v.attached !== p.term) { v.term.write('\r\n\x1b[33m── relevo de cuenta ──\x1b[0m\r\n'); attachTerm(v); }
+      } else makePane(p);
     }
     const running = paneList.filter((p) => p.status === 'running').length;
     $('agentsCount').textContent = paneList.length ? `${running}/${paneList.length}` : '';
@@ -2125,7 +2203,7 @@
     loadPanes().then(() => { if (paneViews.size > before) setTab('agents'); });
   });
   listen('term-output', (e) => {
-    const v = paneViews.get(e.payload.id);
+    const v = [...paneViews.values()].find((x) => x.attached === e.payload.id);
     if (!v) return;
     if (v.replayed) v.term.write(e.payload.data);
     else (v.pending ||= []).push(e.payload.data);
@@ -2156,10 +2234,11 @@
     agents.forEach((a) => sel.appendChild(el('option', { value: a.id, textContent: a.name, disabled: a.status === 'missing' })));
     sel.value = prev && agents.some((a) => a.id === prev) ? prev : (agents.find((a) => a.status === 'ready') || agents[0])?.id || '';
     $('lArgs').value = LAUNCH_PRESETS[sel.value] || '';
+    fillAccounts($('lAccount'), sel.value, 'auto');
     $('launchError').hidden = true;
     $('launchDialog').showModal();
   });
-  $('lCli').addEventListener('change', () => { $('lArgs').value = LAUNCH_PRESETS[$('lCli').value] || ''; });
+  $('lCli').addEventListener('change', () => { $('lArgs').value = LAUNCH_PRESETS[$('lCli').value] || ''; fillAccounts($('lAccount'), $('lCli').value, 'auto'); });
   $('lWorktree').addEventListener('input', () => { if (!$('lName').dataset.touched) $('lName').placeholder = $('lWorktree').value || 'Backend de uso'; });
   $('lName').addEventListener('input', () => { $('lName').dataset.touched = '1'; });
   $('launchForm').addEventListener('submit', async (e) => {
@@ -2177,6 +2256,7 @@
         branch: $('lBranch').value.trim() || null,
         args,
         brief: !inline && brief ? brief : null,
+        account: $('lAccount').value || 'auto',
       });
       $('launchDialog').close();
       $('lBrief').value = '';

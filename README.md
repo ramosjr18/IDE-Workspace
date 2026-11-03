@@ -70,6 +70,17 @@ La pestaña **Uso** del panel derecho muestra en una sola vista una tarjeta por 
 
 Todo se calcula en la app (Rust), en macOS, Windows y Linux: las estadísticas salen de los archivos locales de cada CLI y los límites, de los mismos servicios que usan las CLIs. La app nunca modifica ni renueva los tokens de sesión: si uno caduca, te pide abrir la CLI. Los detalles están en [`docs/plan-pestanas-y-uso.md`](docs/plan-pestanas-y-uso.md).
 
+## Varias cuentas por CLI
+
+Puedes tener varias cuentas de la misma CLI (por ejemplo, dos de Claude Team o dos de Codex) y usarlas a la vez. En **☰ → Agentes**, escribe un nombre y pulsa **+ Cuenta**: se abre el inicio de sesión de esa CLI en una carpeta propia. Las cuentas no comparten nada con la principal: ni sesión, ni historial, ni configuración.
+
+- **Cuenta auto** (por defecto, en el chat y en `agentes run`): se usa la cuenta con más cuota libre. Por encima del 90 % de su límite, una cuenta no recibe trabajo nuevo.
+- **Relevo:** si una cuenta se queda sin cuota a mitad de una respuesta o de un carril, se sigue con la siguiente cuenta con saldo, en el mismo worktree y el mismo panel. El agente nuevo recibe un brief de continuación con lo que ya está hecho. Si ninguna cuenta de esa CLI tiene cuota, se pasa a otra CLI.
+- **Elegir una cuenta concreta:** en el menú, debajo del agente, o con `agentes run --account <nombre>`.
+- La pestaña **Uso** muestra una tarjeta por cuenta.
+
+Funciona con Claude (`CLAUDE_CONFIG_DIR`), Codex (`CODEX_HOME`), OpenCode (`XDG_DATA_HOME`) y Gemini (`GEMINI_CLI_HOME`). Antigravity y Copilot, de momento, solo con su cuenta principal. Diseño completo: [`docs/plan-cuentas.md`](docs/plan-cuentas.md).
+
 ## Ver lo que hace cada agente
 
 Mientras un agente trabaja, su respuesta en el chat muestra en vivo cada paso, como en Claude Code:
