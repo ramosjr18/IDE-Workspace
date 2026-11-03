@@ -352,6 +352,18 @@ fn council_approve(app: AppHandle, id: String, document: String) -> Result<Appro
     Ok(Approved { council: c, conversation_id: conv.id })
 }
 
+/// Lee el layout de la pizarra (Excalidraw) del tablero del consejo; None si no hay pizarra guardada.
+#[tauri::command]
+fn council_board_get(id: String) -> Option<serde_json::Value> {
+    council::board_get(&id)
+}
+
+/// Guarda el layout de la pizarra del tablero del consejo.
+#[tauri::command]
+fn council_board_save(id: String, board: serde_json::Value) -> Result<(), String> {
+    council::board_save(&id, &board)
+}
+
 #[tauri::command]
 fn list_conversations(current: State<'_, CurrentProject>) -> Vec<store::Summary> {
     store::list(&current.get().to_string_lossy())
@@ -439,6 +451,8 @@ pub fn run() {
             council_comment,
             council_cancel,
             council_approve,
+            council_board_get,
+            council_board_save,
             list_conversations,
             get_conversation,
             term_start,
