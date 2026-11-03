@@ -382,8 +382,10 @@ async fn relay(app: &AppHandle, id: u32, reason: &str, log: &str) -> Result<(), 
         (None, Some(o)) => (spec.args.iter().map(|a| if a == o { continuation.clone() } else { a.clone() }).collect(), None),
         (None, None) => (spec.args.clone(), None),
     };
-    let (cli, args, stdin, acc) = choose(&spec.cli, &args, stdin.as_deref(), Some(&continuation), None, &loads, &tried)
-        .ok_or("ninguna cuenta con cuota en ninguna CLI")?;
+    // Sin brief no hay nada que pasar a otra CLI: solo cuentas de la misma.
+    let for_other = original.is_some().then_some(continuation.as_str());
+    let (cli, args, stdin, acc) = choose(&spec.cli, &args, stdin.as_deref(), for_other, None, &loads, &tried)
+        .ok_or(if for_other.is_some() { "ninguna cuenta con cuota en ninguna CLI".to_string() } else { format!("ninguna otra cuenta de {} con cuota (sin brief no se puede pasar a otra CLI)", spec.cli) })?;
     tried.push(acc.id.clone());
     let mut next = pane.clone();
     next.relays.push(format!("{} ({}) → {} ({}): {reason}", pane.cli, pane.account.as_deref().unwrap_or("principal"), cli, acc.label()));
