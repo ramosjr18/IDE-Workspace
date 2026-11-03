@@ -132,7 +132,7 @@ Puedes cambiar de agente a mitad de conversación. El nuevo recibe todo lo anter
 
 ## Desarrollo
 
-Requisitos: [Rust](https://rustup.rs) y Node.js 18 o superior. En Linux, además, `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev` y `patchelf`.
+Requisitos: [Rust](https://rustup.rs) y Node.js 18 o superior. En Linux, además, `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev` y `patchelf`. En Windows, además, hacen falta las Visual Studio Build Tools con la carga de trabajo «Desarrollo para el escritorio con C++» (requisito de Rust/Tauri en Windows) y WebView2 (ya viene en Windows 10/11).
 
 ```sh
 npm install
@@ -141,6 +141,8 @@ npm run build    # genera el instalador de este sistema
 cd src-tauri && cargo test                           # tests
 cd src-tauri && cargo test -- --ignored --nocapture  # tests con las CLIs reales
 ```
+
+En Windows PowerShell, usa `cd src-tauri; cargo test` (con `;` en lugar de `&&`).
 
 ## Notas
 

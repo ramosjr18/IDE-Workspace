@@ -1,7 +1,7 @@
 [package]
 name = "ide-workspace-chat"
 version = "1.0.0"
-description = "Chat de escritorio para agentes CLI"
+description = "App de escritorio para chatear con agentes CLI"
 edition = "2021"
 
 [lib]
