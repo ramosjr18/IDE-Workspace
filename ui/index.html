@@ -1318,7 +1318,7 @@
     const extra = Number($('cJudgeRounds').value);
     const base = n * 2 + 1 + (judge ? 1 : 0);
     const max = base + (judge ? extra * (n + 2) : 0);
-    $('cEstimate').textContent = !n
+    $('cEstimate').textContent = n < 2
       ? 'Elige al menos dos participantes.'
       : `Se harán ${base} llamadas (${n} para opinar, ${n} para contrastar, 1 de síntesis${judge ? ' y 1 del evaluador' : ''})${judge && extra ? `, y hasta ${max} si el evaluador pide ${extra === 1 ? 'una ronda más' : `${extra} rondas más`}` : ''}. Todos trabajan en modo solo lectura.`;
   }
