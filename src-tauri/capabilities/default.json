@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Permisos de la ventana principal",
   "windows": ["main"],
-  "permissions": ["core:default", "opener:allow-open-url", "dialog:allow-open"]
+  "permissions": ["core:default", "opener:allow-open-url", "dialog:allow-open", "dialog:allow-ask", "dialog:allow-message"]
 }

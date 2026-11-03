@@ -1,6 +1,17 @@
 # Plan: varias cuentas por CLI, en simultáneo y con relevo
 
-Estado: **decidido el 03/11/2026** (§6). Implementan OpenCode (`beam-free`), con la detección de agotamiento, y Claude, con el resto.
+Estado: **implementado el 03/11/2026** (decisiones en §6). El carril de OpenCode
+(`beam-free`) terminó sin escribir código, así que la detección también la
+hizo Claude.
+
+Pendiente de verificar:
+- **macOS:** si una cuenta extra de Claude guarda su token en el Llavero en
+  vez de en `.credentials.json`. Hasta comprobarlo, los límites de esa cuenta
+  salen sin datos.
+- **Antigravity y Copilot:** solo cuenta principal, porque su carpeta de
+  sesión no está verificada.
+- **Gemini:** `GEMINI_CLI_HOME` aparece en su código, pero no se ha probado
+  iniciando sesión con una segunda cuenta.
 
 ## Lo que se pidió
 
