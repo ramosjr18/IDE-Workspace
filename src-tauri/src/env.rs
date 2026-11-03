@@ -118,6 +118,16 @@ fn which_in(cmd: &str, path: &str) -> Option<PathBuf> {
     } else {
         vec![String::new()]
     };
+    // En Windows, si `cmd` ya trae extensión (p. ej. "powershell.exe"), pruébala como está
+    // en cada carpeta del PATH antes de añadir extensiones de PATHEXT (evita "powershell.exe.exe").
+    if IS_WIN && Path::new(cmd).extension().is_some() {
+        for dir in path.split(path_sep()) {
+            let file = Path::new(dir).join(cmd);
+            if file.is_file() {
+                return Some(file);
+            }
+        }
+    }
     for dir in path.split(path_sep()) {
         for ext in &exts {
             let file = Path::new(dir).join(format!("{cmd}{ext}"));
