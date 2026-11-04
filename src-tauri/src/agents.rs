@@ -211,7 +211,9 @@ pub async fn status(agent: &Agent) -> &'static str {
         }
         StatusCheck::CopilotAuth => {
             let saved = std::fs::read_to_string(env::home().join(".copilot").join("config.json"))
-                .map(|t| t.contains("\"logged_in_users\"") && !t.contains("\"logged_in_users\": []"))
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v["logged_in_users"].as_array().map(|a| !a.is_empty()))
                 .unwrap_or(false);
             let token = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"].iter().any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
             saved || token || exec("gh", &["auth", "token"], short, &[]).await.0 == 0
@@ -223,6 +225,13 @@ pub async fn status(agent: &Agent) -> &'static str {
 /// Convierte la conversación guardada en el prompt para el agente elegido. Cada respuesta
 /// lleva el nombre del agente que la escribió, para que el siguiente sepa quién dijo qué.
 pub fn build_prompt(agent: &Agent, messages: &[Message], message: &str) -> String {
+    let header = format!(
+        "Estás en un chat compartido por varios asistentes de IA. El usuario puede cambiar de asistente en cualquier momento, así que algunas respuestas anteriores pueden ser de otro asistente: cada una lleva su nombre. Tú eres {}. Continúa la conversación con naturalidad.\n\n--- Conversación hasta ahora ---\n",
+        agent.name
+    );
+    let footer = "\n--- Fin de la conversación ---\n\nNuevo mensaje del usuario:\n";
+    // Presupuesto para el historial: deja sitio para el mensaje nuevo y la cabecera.
+    let budget = agent.max_context.saturating_sub(message.chars().count() + header.chars().count() + footer.chars().count());
     let mut lines: Vec<String> = Vec::new();
     let mut total = 0;
     for m in messages.iter().rev() {
@@ -233,7 +242,7 @@ pub fn build_prompt(agent: &Agent, messages: &[Message], message: &str) -> Strin
         }
         let line = format!("[{who}]: {text}");
         let len = line.chars().count();
-        if total + len > agent.max_context {
+        if total + len > budget {
             break;
         }
         total += len;
@@ -243,18 +252,15 @@ pub fn build_prompt(agent: &Agent, messages: &[Message], message: &str) -> Strin
         return message.to_string();
     }
     lines.reverse();
-    format!(
-        "Estás en un chat compartido por varios asistentes de IA. El usuario puede cambiar de asistente en cualquier momento, así que algunas respuestas anteriores pueden ser de otro asistente: cada una lleva su nombre. Tú eres {}. Continúa la conversación con naturalidad.\n\n--- Conversación hasta ahora ---\n{}\n--- Fin de la conversación ---\n\nNuevo mensaje del usuario:\n{}",
-        agent.name,
-        lines.join("\n\n"),
-        message
-    )
+    format!("{header}{}{footer}{}", lines.join("\n\n"), message)
 }
 
 /// Resultado de una ejecución: respuesta final y pasos que se mostraron.
 pub struct RunResult {
     pub text: String,
     pub steps: Vec<Step>,
+    /// Uso que informó la CLI durante la ejecución (tokens, coste, peticiones).
+    pub usage: crate::stream::Usage,
 }
 
 /// Ejecuta el agente con el prompt en la carpeta `cwd`. Cada paso (comando, archivo editado,
@@ -342,9 +348,10 @@ async fn run_with(
     let status = child.wait().await.map_err(|e| e.to_string())?;
     let err = strip_ansi(&err_task.await.unwrap_or_default());
     let text = parser.final_text();
+    let usage = parser.usage();
     let steps = parser.finish();
     if status.success() {
-        return Ok(RunResult { text, steps });
+        return Ok(RunResult { text, steps, usage });
     }
     let detail = if err.trim().is_empty() {
         steps.iter().rev().find(|s| s.kind == "error" || s.kind == "text").map(|s| s.detail.clone()).unwrap_or_default()

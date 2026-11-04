@@ -2,18 +2,23 @@
   "name": "ide-workspace-chat",
   "version": "1.0.0",
   "private": true,
-  "description": "App de escritorio para chatear con agentes CLI (Claude, Codex, OpenCode, Antigravity, Gemini)",
+  "description": "App de escritorio para chatear con agentes CLI (Claude, Codex, OpenCode, Antigravity, Copilot, Gemini)",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
-    "vendor": "node -e \"const f=require('fs'),p=require('path'),r=(pkg,sub)=>p.join('node_modules',pkg,sub);f.mkdirSync('ui/vendor',{recursive:true});for(const [a,b,c] of [['@xterm/xterm','lib/xterm.js','xterm.js'],['@xterm/xterm','css/xterm.css','xterm.css'],['@xterm/addon-fit','lib/addon-fit.js','addon-fit.js'],['marked','lib/marked.umd.js','marked.js'],['dompurify','dist/purify.min.js','purify.js']])f.copyFileSync(r(a,b),'ui/vendor/'+c);f.rmSync('ui/vendor/monaco',{recursive:true,force:true});f.cpSync(r('monaco-editor','min/vs'),'ui/vendor/monaco/vs',{recursive:true})\""
+    "test:ui": "node --test tests/*.test.js",
+    "vendor": "node -e \"const f=require('fs'),p=require('path'),r=(pkg,sub)=>p.join('node_modules',pkg,sub);f.mkdirSync('ui/vendor',{recursive:true});for(const [a,b,c] of [['@xterm/xterm','lib/xterm.js','xterm.js'],['@xterm/xterm','css/xterm.css','xterm.css'],['@xterm/addon-fit','lib/addon-fit.js','addon-fit.js'],['marked','lib/marked.umd.js','marked.js'],['dompurify','dist/purify.min.js','purify.js']])f.copyFileSync(r(a,b),'ui/vendor/'+c);f.rmSync('ui/vendor/monaco',{recursive:true,force:true});f.cpSync(r('monaco-editor','min/vs'),'ui/vendor/monaco/vs',{recursive:true})\" && node scripts/pizarra.mjs"
   },
   "devDependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
     "@tauri-apps/cli": "2.12.4",
     "@xterm/addon-fit": "0.10.0",
     "@xterm/xterm": "5.5.0",
     "dompurify": "3.4.17",
+    "esbuild": "0.25.10",
     "marked": "18.1.1",
-    "monaco-editor": "^0.52.2"
+    "monaco-editor": "^0.52.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   }
 }

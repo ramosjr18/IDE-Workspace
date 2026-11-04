@@ -10,6 +10,8 @@
 <script src="vendor/marked.js"></script>
 <script src="vendor/purify.js"></script>
 <script src="vendor/monaco/vs/loader.js"></script>
+<script src="consejo-coste.js"></script>
+<script src="maquetas.js"></script>
 <style>
   :root {
     --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -185,6 +187,10 @@
   .member-row label { display: flex; gap: 8px; align-items: center; min-width: 170px; }
   .member-row select { flex: 1; }
   .member-row.unavailable { opacity: .5; }
+  .role-rows { display: flex; flex-direction: column; gap: 8px; font-weight: 400; }
+  .role-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+  .role-row textarea { grid-column: 1 / -1; font: inherit; font-size: 13px; line-height: 1.4; }
+  .role-row .muted { font-size: 12px; }
   .judge-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; font-weight: 400; }
   .judge-row label { display: flex; gap: 8px; align-items: center; }
   .judge-row select { width: auto; }
@@ -196,9 +202,13 @@
   .verdict .muted { font-size: 12px; }
   .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
   #councilBody { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
+  #councilBody[hidden] { display: none; }
+  #councilCanvas { flex: 1; min-height: 0; position: relative; }
+  #councilCanvas[hidden] { display: none; }
   #councilSelect { flex: 1; min-width: 0; }
   .c-head { padding: 12px 14px 8px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
   .c-topic { font-weight: 700; font-size: 15px; }
+  .c-cost { font-size: 12px; color: var(--muted); }
   .c-phases { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .c-phase { font: 600 11px/1 ui-monospace, Menlo, monospace; padding: 5px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
   .c-phase.on { color: var(--me); border-color: var(--me); background: color-mix(in srgb, var(--me) 14%, transparent); }
@@ -211,6 +221,7 @@
   .c-col-head .name { font-weight: 700; font-size: 14px; display: flex; gap: 6px; align-items: center; }
   .c-col-head .role { font-size: 12px; color: var(--muted); }
   .c-col-head .act { font-size: 12px; color: var(--muted); display: flex; gap: 5px; align-items: center; min-height: 18px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .c-col-head .cost { font-size: 12px; color: var(--muted); }
   .c-col-head .act.err { color: var(--error); white-space: normal; }
   .c-card { border: 1px solid var(--border); border-left: 3px solid var(--c); border-radius: 8px; padding: 8px 10px; font-size: 13px; background: var(--bg); display: flex; flex-direction: column; gap: 4px; }
   .c-card.flash { outline: 2px solid var(--me); }
@@ -271,8 +282,10 @@
 
   /* Editor (Monaco) */
   #editorHost { flex: 1; position: relative; min-height: 0; }
-  #editor, #diffEditor { position: absolute; inset: 0; }
+  #editor, #diffEditor, #htmlPreview { position: absolute; inset: 0; }
   #editor[hidden], #diffEditor[hidden] { display: none; }
+  #htmlPreview[hidden] { display: none; }
+  #htmlPreview { border: 0; background: #fff; width: 100%; height: 100%; }
   #fileNotice { position: absolute; inset: 0; background: var(--panel); }
   #fileNotice[hidden] { display: none; }
   .gm-added { background: var(--git-add); width: 3px !important; margin-left: 3px; }
@@ -389,6 +402,7 @@
     <h3>Conversaciones</h3>
     <button id="reset" type="button" class="item"><i class="codicon codicon-add"></i> Nueva conversación</button>
     <button id="menuCouncil" type="button" class="item"><i class="codicon codicon-organization"></i> Convocar consejo</button>
+    <button id="menuRoles" type="button" class="item"><i class="codicon codicon-account"></i> Roles y plantillas</button>
     <div id="convs" class="conv-list"></div>
   </section>
   <section class="needs-project">
@@ -461,6 +475,7 @@
         <span id="filePath" class="path-label"></span>
         <span id="fileStats" class="stats"></span>
         <span class="actions">
+          <button type="button" class="icon" id="previewToggle" title="Vista previa del HTML" aria-pressed="false" hidden><i class="codicon codicon-preview"></i></button>
           <button type="button" class="icon" id="diffToggle" title="Ver cambios respecto al último commit" aria-pressed="false"><i class="codicon codicon-git-compare"></i></button>
           <button type="button" class="icon" id="saveFile" title="Guardar (⌘S / Ctrl+S)" disabled><i class="codicon codicon-save"></i></button>
           <button type="button" class="icon" id="follow" title="Seguir: mostrar el archivo que está editando el agente" aria-pressed="true"><i class="codicon codicon-eye"></i></button>
@@ -470,6 +485,7 @@
       <div id="editorHost">
         <div id="editor"></div>
         <div id="diffEditor" hidden></div>
+        <iframe id="htmlPreview" sandbox="allow-scripts" title="Vista previa" hidden></iframe>
         <p id="fileNotice" class="muted pad">Aquí verás el archivo que se está editando. También puedes abrir uno desde Worktree.</p>
       </div>
     </div>
@@ -478,10 +494,12 @@
         <select id="councilSelect" aria-label="Consejos de este proyecto"></select>
         <span class="actions">
           <button type="button" class="icon" id="newCouncil" title="Nuevo consejo"><i class="codicon codicon-add"></i></button>
+          <button type="button" class="icon" id="councilMode" title="Ver como pizarra" aria-pressed="false"><i class="codicon codicon-edit"></i></button>
           <button type="button" class="icon" id="widenCouncil" title="Ampliar el tablero (oculta el chat)" aria-pressed="false"><i class="codicon codicon-screen-full"></i></button>
         </span>
       </div>
       <div id="councilBody"></div>
+      <div id="councilCanvas" hidden></div>
     </div>
   </aside>
 </main>
@@ -500,6 +518,9 @@
   <form id="councilForm" method="dialog">
     <div class="dlg-head"><h2>Nuevo consejo</h2><button type="button" data-close>Cancelar</button></div>
     <div class="council-form">
+      <label class="field">Plantilla <span class="muted">(rellena participantes, roles, moderador y resultado)</span>
+        <select id="cTemplate"></select>
+      </label>
       <label class="field">Tema
         <input id="cTopic" placeholder="Ej.: Política de versionado de la API" autocomplete="off">
       </label>
@@ -526,6 +547,10 @@
       <label class="field">Contexto <span class="muted">(la conversación actual; edítalo si quieres)</span>
         <textarea id="cContext" rows="7"></textarea>
       </label>
+      <div class="field">Guardar como plantilla <span class="muted">(con los participantes, roles, moderador y resultado de ahora)</span>
+        <div class="member-row"><input id="cTemplateName" placeholder="Nombre de la plantilla" autocomplete="off"><button type="button" id="cTemplateSave">Guardar</button></div>
+        <span class="muted" id="cTemplateMsg"></span>
+      </div>
       <p class="muted" id="cEstimate"></p>
       <p class="step-error" id="cError" hidden></p>
     </div>
@@ -549,6 +574,23 @@
       <p id="launchError" hidden></p>
     </div>
     <div class="dlg-foot"><button type="submit" class="primary" id="lGo">Lanzar</button></div>
+  </form>
+</dialog>
+
+<dialog id="rolesDialog">
+  <form id="rolesForm" method="dialog">
+    <div class="dlg-head"><h2>Roles y plantillas</h2><button type="button" data-close>Cancelar</button></div>
+    <div class="council-form">
+      <div class="field">Roles <span class="muted">(lo que se le pide a cada participante)</span>
+        <div id="rRoles" class="role-rows"></div>
+        <button type="button" id="rAddRole">Añadir rol</button>
+      </div>
+      <div class="field">Plantillas <span class="muted">(se crean desde «Nuevo consejo» con «Guardar como plantilla»)</span>
+        <div id="rTemplates" class="role-rows"></div>
+      </div>
+      <p class="step-error" id="rError" hidden></p>
+    </div>
+    <div class="dlg-foot"><button type="submit" class="primary">Guardar</button></div>
   </form>
 </dialog>
 
@@ -659,6 +701,7 @@
   }
 
   $('menuCouncil').addEventListener('click', () => openCouncilDialog(''));
+  $('menuRoles').addEventListener('click', () => openRolesDialog());
   $('reset').addEventListener('click', () => {
     loadConversation(null);
     loadConversationList();
@@ -732,6 +775,13 @@
     }
     const message = $('input').value.trim();
     if (!message) return;
+    // /maqueta «tema» pide al agente una maqueta HTML en docs/maquetas/
+    const maqueta = message.match(/^\/maqueta\b\s*([\s\S]*)$/i);
+    if (maqueta && maqueta[1].trim()) {
+      $('input').value = Maquetas.mockupPrompt(maqueta[1].trim());
+      // Se reenvía fuera de este evento: un requestSubmit dentro de submit se ignora.
+      return setTimeout(() => $('form').requestSubmit(), 0);
+    }
     // /consejo «tema» abre el diálogo para convocar un consejo de agentes
     const slash = message.match(/^\/consejo\b\s*([\s\S]*)$/i);
     if (slash) {
@@ -1437,6 +1487,11 @@
     decorations = editor.createDecorationsCollection();
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveCurrent);
     editor.onDidChangeModelContent(updateDirty);
+    let previewTimer; // retardo para no volver a pintar la vista previa en cada pulsación
+    editor.onDidChangeModelContent(() => { // con cambios sin guardar, refresca la vista previa en vivo
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(renderPreview, 300);
+    });
     diffEditor = monaco.editor.createDiffEditor($('diffEditor'), { ...common, originalEditable: false, useInlineViewWhenSpaceIsLimited: true, renderSideBySideInlineBreakpoint: 700 });
     diffEditor.getModifiedEditor().addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveCurrent);
     renderTree(); // los iconos (codicons) ya están cargados
@@ -1478,6 +1533,28 @@
     $('fileStats').innerHTML = parts.join(' ');
   }
 
+  // ¿Es un archivo HTML (.html/.htm)?
+  const isHtml = (p) => /\.html?$/i.test(p || '');
+  // ¿Está visible la vista previa del HTML?
+  function previewOn() { return !$('htmlPreview').hidden; }
+  // Vuelca el contenido actual del editor (con cambios sin guardar) en la vista previa.
+  function renderPreview() {
+    if (previewOn() && editor && editor.getModel()) $('htmlPreview').srcdoc = editor.getModel().getValue();
+  }
+  // Muestra u oculta la vista previa del HTML (solo en archivos .html) y deja el diff en un estado coherente.
+  async function setPreview(on) {
+    on = on && isHtml(currentFile);
+    if (pressed('diffToggle')) { // si el diff está activo, desactívalo con la misma lógica que usa su botón
+      $('diffToggle').setAttribute('aria-pressed', 'false');
+      showDiff(await monacoReady);
+    }
+    $('htmlPreview').hidden = !on;
+    $('editor').hidden = on;
+    $('previewToggle').setAttribute('aria-pressed', String(on));
+    if (on) renderPreview(); // pinta la maqueta
+    else editor.layout(); // Monaco recalcula su tamaño al volver a mostrar el editor
+  }
+
   // Abre (o refresca) un archivo en el editor.
   //   switchTab: cambiar a la pestaña Archivo · refresh: recarga del mismo archivo tras un cambio en disco
   async function openFile(path, { switchTab = false, refresh = false, force = false } = {}) {
@@ -1495,12 +1572,16 @@
     try {
       view = await invoke('read_file', { path });
     } catch (err) {
+      setPreview(false); // con aviso no hay contenido que previsualizar
+      $('previewToggle').hidden = true;
       return showNotice(String(err));
     }
     if (currentFile !== path) return; // se abrió otro mientras tanto
     if (view.content == null) {
       $('fileStats').textContent = '';
       $('saveFile').disabled = true;
+      setPreview(false); // con aviso no hay contenido que previsualizar
+      $('previewToggle').hidden = true;
       return showNotice(view.notice);
     }
     $('fileNotice').hidden = true;
@@ -1534,6 +1615,9 @@
     const first = [...view.modified, ...view.added].sort((a, b) => a - b)[0];
     if (changedFile && !refresh && !info.viewState && first) editor.revealLineInCenter(first);
     else if (refresh && sending && pressed('follow') && first) editor.revealLineInCenterIfOutsideViewport(Math.max(...view.added, ...view.modified));
+    $('previewToggle').hidden = !isHtml(path); // solo los HTML tienen botón de vista previa
+    if (changedFile) setPreview(isHtml(path) && path.startsWith('docs/maquetas/')); // las maquetas se abren con vista previa
+    else renderPreview(); // al recargar el mismo archivo, refresca la vista previa
   }
 
   async function showDiff(monaco) {
@@ -1549,7 +1633,8 @@
     if (old?.original) old.original.dispose();
   }
 
-  $('diffToggle').addEventListener('click', async () => { togglePressed('diffToggle'); showDiff(await monacoReady); });
+  $('diffToggle').addEventListener('click', async () => { if (previewOn()) await setPreview(false); togglePressed('diffToggle'); showDiff(await monacoReady); }); // el diff y la vista previa se excluyen
+  $('previewToggle').addEventListener('click', () => setPreview(!previewOn()));
   $('follow').addEventListener('click', () => togglePressed('follow'));
   $('saveFile').addEventListener('click', saveCurrent);
   $('reloadFromDisk').addEventListener('click', () => currentFile && openFile(currentFile, { refresh: true, force: true }));
@@ -1586,13 +1671,120 @@
 
   // ---------- Consejo de agentes ----------
   let councilRoles = [];
+  let rolesTemplates = []; // plantillas del consejo, tal como las devuelve council_config_get
   let council = null; // consejo abierto en el tablero
   const councilActivity = {}; // agente → lo que está haciendo ahora
   let councilReplyTo = null;
+  let councilMode = store.get('councilMode') === 'pizarra' ? 'pizarra' : 'columnas';
+  let pizarra = null; // { id, handle, timer, lastVersion }
+  let pizarraTurno = 0; // turno de apertura: se incrementa en cada open/close para descartar montajes obsoletos
+  let pizarraCargando = null; // promesa de carga del bundle de pizarra, para no repetirla
   const COLORS = ['#c8643b', '#3d6fc4', '#8a57c2', '#2f9a8a', '#b08a1e', '#c24f7f'];
   const RUNNING = ['diverge', 'contrast', 'converge', 'judge'];
   const KIND = { propuesta: 'Propuesta', riesgo: 'Riesgo', apoyo: 'Apoyo', objecion: 'Objeción', pregunta: 'Pregunta', comentario: 'Comentario' };
   const el = (tag, props = {}, ...children) => { const n = Object.assign(document.createElement(tag), props); n.append(...children.filter((c) => c != null)); return n; };
+
+  // Carga diferida del bundle de pizarra (8 MB): inserta su CSS y sus scripts una sola vez y promete que cargan.
+  function loadPizarra() {
+    if (pizarraCargando) return pizarraCargando;
+    pizarraCargando = new Promise((resolve, reject) => {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'vendor/pizarra/pizarra.css';
+      const bundle = document.createElement('script');
+      bundle.src = 'vendor/pizarra/pizarra.js';
+      const escena = document.createElement('script');
+      escena.src = 'pizarra-escena.js';
+      let quedan = 2;
+      const cargado = () => { if (--quedan === 0) resolve(); };
+      // Si falla libera la promesa para que se pueda reintentar.
+      const fallado = () => { pizarraCargando = null; reject(new Error('No se pudo cargar el bundle de pizarra')); };
+      for (const s of [bundle, escena]) {
+        s.addEventListener('load', cargado);
+        s.addEventListener('error', fallado);
+      }
+      document.head.append(link, bundle, escena);
+    });
+    return pizarraCargando;
+  }
+
+  // Suma las versiones de los elementos para saber si cambió algo de verdad en la pizarra.
+  function boardVersion(elements) {
+    return (elements || []).reduce((n, e) => n + (e.version || 0), 0);
+  }
+
+  // Guarda la pizarra del consejo abierto si cambió algo: al momento o con retardo de 800 ms.
+  function saveBoard(now) {
+    if (!pizarra) return;
+    if (pizarra.timer) { clearTimeout(pizarra.timer); pizarra.timer = null; }
+    const els = pizarra.handle.getElements();
+    if (boardVersion(els) === pizarra.lastVersion) return;
+    if (!now) {
+      pizarra.timer = setTimeout(() => { pizarra.timer = null; saveBoard(true); }, 800);
+      return;
+    }
+    pizarra.lastVersion = boardVersion(els);
+    invoke('council_board_save', { id: pizarra.id, board: PizarraEscena.boardToSave(els, pizarra.appState) }).catch((err) => councilError(err));
+  }
+
+  // Cierra la pizarra del consejo guardando lo pendiente y liberando su vista.
+  function closeBoard() {
+    ++pizarraTurno; // invalida una apertura en curso, aunque no haya nada montado
+    if (!pizarra) return;
+    saveBoard(true);
+    pizarra.handle.unmount();
+    pizarra = null;
+  }
+
+  // Abre la pizarra del consejo abierto: carga el bundle, recupera lo guardado, monta la escena y añade lo que falte tras esperar la fuente.
+  async function openBoard() {
+    try {
+      if (!council) { closeBoard(); return; }
+      if (pizarra && pizarra.id === council.id) { syncBoard(); return; }
+      closeBoard();
+      const turno = ++pizarraTurno; // turno de esta apertura: captura tras el closeBoard de arriba, que también sube el turno
+      await loadPizarra();
+      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
+      const saved = await invoke('council_board_get', { id: council.id });
+      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
+      // habiaVista recuerda si había appState guardado: solo encuadra al abrir cuando no hay vista propia.
+      const habiaVista = !!(saved && saved.appState);
+      const existing = (saved && saved.elements) || [];
+      const handle = Pizarra.mount($('councilCanvas'), { elements: existing, appState: saved && saved.appState }, {
+        theme: dark.matches ? 'dark' : 'light',
+        onChange: (els, appState) => {
+          if (pizarra) { pizarra.appState = appState; saveBoard(false); }
+        },
+      });
+      pizarra = { id: council.id, handle, timer: null, lastVersion: boardVersion(existing), appState: (saved && saved.appState) || null };
+      await Pizarra.fontsReady();
+      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
+      syncBoard();
+      // Encuadra las tarjetas la primera vez: si el usuario ya tenía su vista guardada, se respeta.
+      if (!habiaVista) pizarra.handle.scrollToContent();
+    } catch (err) { councilError(err); }
+  }
+
+  // Añade a la pizarra abierta las tarjetas del consejo que aún no estén en ella.
+  function syncBoard() {
+    if (!pizarra || !council || pizarra.id !== council.id) return;
+    const actuales = pizarra.handle.getElements();
+    const faltan = PizarraEscena.missingSkeletons(council, actuales);
+    if (faltan.length === 0) return;
+    pizarra.handle.update([...actuales, ...Pizarra.convert(faltan)]);
+    saveBoard(false);
+  }
+
+  // Muestra las columnas o la pizarra según el modo y el consejo abierto, montándola o cerrándola.
+  function applyCouncilMode() {
+    const on = councilMode === 'pizarra' && !!council;
+    $('councilCanvas').hidden = !on;
+    $('councilBody').hidden = on;
+    $('councilMode').setAttribute('aria-pressed', String(councilMode === 'pizarra'));
+    $('councilMode').setAttribute('title', on ? 'Ver como columnas' : 'Ver como pizarra');
+    if (on) openBoard();
+    else closeBoard();
+  }
 
   function toggleWide(force) {
     const on = force ?? !document.body.classList.contains('council-wide');
@@ -1602,7 +1794,13 @@
     requestAnimationFrame(fitPanes);
   }
   $('widenCouncil').addEventListener('click', () => toggleWide());
-  $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); });
+  // Alterna el modo de la vista del consejo entre columnas y pizarra y guarda la preferencia.
+  $('councilMode').addEventListener('click', () => {
+    councilMode = councilMode === 'pizarra' ? 'columnas' : 'pizarra';
+    store.set('councilMode', councilMode);
+    applyCouncilMode();
+  });
+  $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); applyCouncilMode(); });
   $('newCouncil').addEventListener('click', () => openCouncilDialog(''));
   $('councilSelect').addEventListener('change', () => openCouncil($('councilSelect').value || null));
 
@@ -1621,12 +1819,15 @@
     councilReplyTo = null;
     store.set(`council:${project.path}`, id || '');
     renderCouncil();
+    applyCouncilMode();
     loadCouncilList();
   }
 
   // ----- Convocar -----
   async function openCouncilDialog(topic) {
-    if (!councilRoles.length) councilRoles = await invoke('council_roles');
+    const cfg = await invoke('council_config_get');
+    councilRoles = cfg.roles;
+    rolesTemplates = cfg.templates;
     $('cTopic').value = topic;
     $('cError').hidden = true;
     $('cContext').value = await invoke('council_context', { conversationId });
@@ -1657,10 +1858,99 @@
     $('cJudge').onchange = updateEstimate;
     $('cJudgeRounds').onchange = updateEstimate;
     updateEstimate();
+    const ct = $('cTemplate');
+    ct.innerHTML = '';
+    ct.appendChild(el('option', { value: '', textContent: 'Sin plantilla' }));
+    rolesTemplates.forEach((t) => ct.appendChild(el('option', { value: t.id, textContent: t.name })));
+    ct.value = '';
+    $('cTemplateName').value = '';
+    $('cTemplateMsg').textContent = '';
     closeMenu();
     $('councilDialog').showModal();
     $('cTopic').focus();
   }
+
+  // ----- Roles y plantillas -----
+  // Id a partir del nombre: minúsculas, sin tildes, solo letras y números; único entre los ids ya usados.
+  function slugRole(name, taken) {
+    const base = (name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')) || 'rol';
+    let id = base;
+    for (let n = 2; taken.includes(id); n++) id = `${base}-${n}`;
+    return id;
+  }
+
+  // Fila editable de un rol: nombre, «Quitar» y descripción; guarda el id original si ya existía.
+  function roleRow(r) {
+    const row = el('div', { className: 'role-row' },
+      el('input', { value: r.name || '', placeholder: 'Nombre del rol', autocomplete: 'off' }),
+      el('button', { type: 'button', textContent: 'Quitar' }),
+      el('textarea', { rows: 2, value: r.description || '', placeholder: 'Qué debe hacer el agente con este rol' }),
+      r.id ? el('span', { className: 'muted', textContent: `id: ${r.id}` }) : null);
+    row.querySelector('button').addEventListener('click', () => row.remove());
+    row.dataset.id = r.id || '';
+    return row;
+  }
+
+  // Fila por plantilla: «nombre · tipo de resultado · N participantes», con «Quitar» que la elimina de la lista.
+  function templateRow(tpl) {
+    const out = { adr: 'ADR', politica: 'Política', nota: 'Nota' };
+    const row = el('div', { className: 'role-row' },
+      el('span', { textContent: `${tpl.name} · ${out[tpl.output] || tpl.output} · ${tpl.members.length} participantes` }),
+      el('button', { type: 'button', textContent: 'Quitar' }));
+    row.querySelector('button').addEventListener('click', () => {
+      rolesTemplates = rolesTemplates.filter((t) => t !== tpl);
+      row.remove();
+    });
+    return row;
+  }
+
+  // Abre el diálogo: pide la configuración y rellena los roles editables y las plantillas.
+  async function openRolesDialog() {
+    closeMenu();
+    const cfg = await invoke('council_config_get');
+    rolesTemplates = cfg.templates;
+    const roles = $('rRoles');
+    roles.innerHTML = '';
+    cfg.roles.forEach((r) => roles.appendChild(roleRow(r)));
+    const tpl = $('rTemplates');
+    tpl.innerHTML = '';
+    if (!rolesTemplates.length) tpl.appendChild(el('span', { className: 'muted', textContent: 'Todavía no hay plantillas.' }));
+    rolesTemplates.forEach((t) => tpl.appendChild(templateRow(t)));
+    $('rError').hidden = true;
+    $('rolesDialog').showModal();
+  }
+
+  // Añade una fila de rol nueva y enfoca su nombre.
+  $('rAddRole').addEventListener('click', () => {
+    const row = roleRow({ id: '', name: '', description: '' });
+    $('rRoles').appendChild(row);
+    row.querySelector('input').focus();
+  });
+
+  // Guarda la configuración: conserva los ids existentes y genera los nuevos a partir del nombre.
+  $('rolesForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('rError').hidden = true;
+    const rows = [...$('rRoles').querySelectorAll('.role-row')];
+    const ids = rows.map((r) => r.dataset.id).filter(Boolean); // los ids conservados siguen en uso
+    const roles = [];
+    for (const row of rows) {
+      const name = row.querySelector('input').value.trim();
+      const description = row.querySelector('textarea').value.trim();
+      const id = row.dataset.id || slugRole(name, ids);
+      if (!row.dataset.id) ids.push(id);
+      roles.push({ id, name, description });
+    }
+    try {
+      const saved = await invoke('council_config_save', { config: { roles, templates: rolesTemplates } });
+      councilRoles = saved.roles;
+      $('rolesDialog').close();
+    } catch (err) {
+      $('rError').textContent = String(err);
+      $('rError').hidden = false;
+    }
+  });
 
   function selectedMembers() {
     return [...$('cMembers').querySelectorAll('.member-row')]
@@ -1674,10 +1964,56 @@
     const extra = Number($('cJudgeRounds').value);
     const base = n * 2 + 1 + (judge ? 1 : 0);
     const max = base + (judge ? extra * (n + 2) : 0);
-    $('cEstimate').textContent = !n
+    $('cEstimate').textContent = n < 2
       ? 'Elige al menos dos participantes.'
       : `Se harán ${base} llamadas (${n} para opinar, ${n} para contrastar, 1 de síntesis${judge ? ' y 1 del evaluador' : ''})${judge && extra ? `, y hasta ${max} si el evaluador pide ${extra === 1 ? 'una ronda más' : `${extra} rondas más`}` : ''}. Todos trabajan en modo solo lectura.`;
   }
+
+  // Rellena el diálogo con la plantilla t: resultado, participantes con sus roles y moderador.
+  function applyTemplate(t) {
+    $('cOutput').value = t.output;
+    const rows = [...$('cMembers').querySelectorAll('.member-row')];
+    const missing = [];
+    for (const m of t.members) {
+      const row = rows.find((r) => r.dataset.agent === m.agent);
+      if (!row || row.querySelector('input').disabled) { missing.push(m.agent); continue; }
+      row.querySelector('input').checked = true;
+      if (councilRoles.some((r) => r.id === m.role)) row.querySelector('select').value = m.role;
+    }
+    rows.forEach((row) => {
+      if (!t.members.some((m) => m.agent === row.dataset.agent)) row.querySelector('input').checked = false;
+    });
+    const mod = $('cModerator');
+    if ([...mod.options].some((o) => o.value === t.moderator)) mod.value = t.moderator;
+    const names = missing.map((id) => agents.find((a) => a.id === id)?.name || id);
+    $('cTemplateMsg').textContent = names.length ? `No disponibles ahora: ${names.join(', ')}` : '';
+    updateEstimate();
+  }
+
+  // Al elegir una plantilla, rellena el diálogo con sus participantes, roles, moderador y resultado.
+  $('cTemplate').addEventListener('change', () => {
+    const t = rolesTemplates.find((x) => x.id === $('cTemplate').value);
+    if (t) applyTemplate(t);
+  });
+
+  // Guarda los participantes, roles, moderador y resultado de ahora como plantilla nueva.
+  $('cTemplateSave').addEventListener('click', async () => {
+    const name = $('cTemplateName').value.trim();
+    if (!name) { $('cTemplateMsg').textContent = 'Escribe un nombre para la plantilla.'; return; }
+    const t = { id: slugRole(name, rolesTemplates.map((x) => x.id)), name,
+      output: $('cOutput').value, members: selectedMembers(), moderator: $('cModerator').value };
+    if (t.members.length < 2) { $('cTemplateMsg').textContent = 'Elige al menos dos participantes.'; return; }
+    try {
+      const saved = await invoke('council_config_save', { config: { roles: councilRoles, templates: [...rolesTemplates, t] } });
+      rolesTemplates = saved.templates;
+      $('cTemplate').appendChild(el('option', { value: t.id, textContent: t.name }));
+      $('cTemplate').value = t.id;
+      $('cTemplateName').value = '';
+      $('cTemplateMsg').textContent = `Plantilla «${name}» guardada.`;
+    } catch (err) {
+      $('cTemplateMsg').textContent = String(err);
+    }
+  });
 
   $('councilForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1773,6 +2109,8 @@
       return;
     }
     const c = council;
+    const stats = ConsejoCoste.councilStats(c);
+    const agentCost = (id) => { const a = stats.byAgent.find((x) => x.agent === id); return a ? ConsejoCoste.formatStats(a) : ''; };
     // Cabecera: tema, fases y acciones
     const phases = [
       ['diverge', 'Divergir'], ['contrast', `Contrastar${c.round ? ` · ronda ${c.round}` : ''}`], ['converge', 'Converger'],
@@ -1788,7 +2126,8 @@
       stop.addEventListener('click', () => invoke('council_cancel', { id: c.id }));
       chips.appendChild(stop);
     }
-    body.appendChild(el('div', { className: 'c-head' }, el('div', { className: 'c-topic', textContent: c.topic }), chips));
+    body.appendChild(el('div', { className: 'c-head' }, el('div', { className: 'c-topic', textContent: c.topic }), chips,
+      stats.total.calls > 0 ? el('div', { className: 'c-cost', textContent: 'Uso del consejo: ' + ConsejoCoste.formatStats(stats.total), title: stats.byAgent.map((a) => `${a.agentName}: ${ConsejoCoste.formatStats(a)}`).join('\n') }) : null));
     if (c.phase === 'error' || c.phase === 'cancelled') {
       body.appendChild(el('div', { className: 'c-banner', textContent: `${c.phase === 'cancelled' ? 'Detenido' : 'Error'}: ${c.error || ''}` }));
     }
@@ -1807,7 +2146,8 @@
       else if (m.status === 'error') act.textContent = m.activity || 'Error';
       else if (m.status === 'done') act.append(el('i', { className: 'codicon codicon-check' }), ' Listo');
       col.appendChild(el('div', { className: 'c-col-head' },
-        el('div', { className: 'name' }, el('span', { textContent: m.agentName })), el('div', { className: 'role', textContent: m.roleName }), act));
+        el('div', { className: 'name' }, el('span', { textContent: m.agentName })), el('div', { className: 'role', textContent: m.roleName }), act,
+        agentCost(m.agent) ? el('div', { className: 'cost', textContent: agentCost(m.agent) }) : null));
       topLevel(m.agent).forEach((k) => col.appendChild(cardEl(k, byTarget)));
       board.appendChild(col);
     }
@@ -1854,10 +2194,13 @@
   function synthesisColumn(c) {
     const col = el('div', { className: 'c-col c-synth' });
     const mod = agents.find((a) => a.id === c.moderator);
+    const stats = ConsejoCoste.councilStats(c);
+    const modCost = stats.byAgent.find((x) => x.agent === c.moderator);
     const act = el('div', { className: 'act' });
     if (c.phase === 'converge') act.append(el('i', { className: 'codicon codicon-loading codicon-modifier-spin' }), ` ${councilActivity.moderator || 'Redactando…'}`);
     col.appendChild(el('div', { className: 'c-col-head' },
-      el('div', { className: 'name', textContent: 'Síntesis' }), el('div', { className: 'role', textContent: `Moderador: ${mod ? mod.name : c.moderator}` }), act));
+      el('div', { className: 'name', textContent: 'Síntesis' }), el('div', { className: 'role', textContent: `Moderador: ${mod ? mod.name : c.moderator}` }), act,
+      modCost ? el('div', { className: 'cost', textContent: ConsejoCoste.formatStats(modCost) }) : null));
     const v = c.verdicts?.at(-1);
     if (v) col.appendChild(verdictEl(c, v));
     const s = c.synthesis;
@@ -1876,7 +2219,14 @@
       open.addEventListener('click', () => openFile(c.documentPath, { switchTab: true }));
       const back = el('button', { type: 'button', textContent: 'Volver al chat' });
       back.addEventListener('click', () => { toggleWide(false); $('input').focus(); });
-      actions.append(open, back);
+      const mock = el('button', { type: 'button', textContent: 'Maquetar esta decisión' });
+      mock.addEventListener('click', () => {
+        if (sending) return councilError('Espera a que termine el agente del chat.');
+        toggleWide(false);
+        $('input').value = Maquetas.mockupPrompt(c.topic, c.documentPath);
+        $('form').requestSubmit();
+      });
+      actions.append(open, mock, back);
     } else if (!RUNNING.includes(c.phase)) {
       const approve = el('button', { type: 'button', className: 'primary', textContent: 'Aprobar y guardar' });
       approve.addEventListener('click', async () => {
@@ -1938,6 +2288,7 @@
       const sameDoc = council?.synthesis?.document === c.synthesis?.document;
       council = c;
       renderCouncil();
+      if (councilMode === 'pizarra') syncBoard();
       if (draftComment) document.getElementById('cCommentText').value = draftComment;
       if (draftDoc && sameDoc && c.phase !== 'approved') document.querySelector('.c-doc').value = draftDoc;
     }

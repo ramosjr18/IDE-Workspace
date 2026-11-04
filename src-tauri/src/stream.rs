@@ -44,6 +44,44 @@ pub struct Step {
     pub exit_code: Option<i32>,
 }
 
+/// Uso que informa la CLI: tokens, coste y peticiones facturadas.
+#[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    /// Tokens de entrada (con las cachés leídas/creadas).
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub input_tokens: Option<u64>,
+    /// Tokens de salida (con la razón).
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub output_tokens: Option<u64>,
+    /// Coste acumulado en dólares.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub cost_usd: Option<f64>,
+    /// Peticiones facturadas aparte (Copilot premium).
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub requests: Option<f64>,
+}
+
+impl Usage {
+    /// Suma otro uso en este, campo a campo: None + None es None y None cuenta como 0.
+    pub fn add(&mut self, other: &Usage) {
+        fn sumar_u64(a: &mut Option<u64>, b: Option<u64>) {
+            *a = match (a.take(), b) {
+                (None, b) => b,
+                (a, None) => a,
+                (Some(x), Some(y)) => Some(x + y),
+            };
+        }
+        fn sumar_f64(a: &mut Option<f64>, b: Option<f64>) {
+            *a = match (a.take(), b) {
+                (None, b) => b,
+                (a, None) => a,
+                (Some(x), Some(y)) => Some(x + y),
+            };
+        }
+        sumar_u64(&mut self.input_tokens, other.input_tokens);
+        sumar_u64(&mut self.output_tokens, other.output_tokens);
+        sumar_f64(&mut self.cost_usd, other.cost_usd);
+        sumar_f64(&mut self.requests, other.requests);
+    }
+}
+
 const MAX_OUTPUT: usize = 8000;
 
 fn tail(s: &str, max: usize) -> String {
@@ -80,6 +118,11 @@ fn classify(name: &str) -> &'static str {
 
 fn str_field<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter().find_map(|k| v.get(*k).and_then(Value::as_str)).filter(|s| !s.is_empty())
+}
+
+/// Primer número entero que exista entre las claves, o 0 si falta.
+fn u64_field(v: &Value, keys: &[&str]) -> u64 {
+    keys.iter().find_map(|k| v.get(*k).and_then(Value::as_u64)).unwrap_or(0)
 }
 
 /// Texto de un resultado que puede ser cadena o lista de bloques {type:text, text}.
@@ -120,6 +163,7 @@ pub struct Parser {
     index: HashMap<String, usize>,
     final_text: Option<String>,
     plain: String,
+    usage: Usage,
 }
 
 impl Parser {
@@ -127,7 +171,7 @@ impl Parser {
         let cwd = cwd.to_string_lossy().trim_end_matches('/').to_string();
         // En macOS /tmp es /private/tmp: algunas CLIs informan una u otra ruta.
         let cwd_alt = cwd.strip_prefix("/private").map(str::to_string).unwrap_or_else(|| format!("/private{cwd}"));
-        Parser { format, cwd, cwd_alt, steps: vec![], index: HashMap::new(), final_text: None, plain: String::new() }
+        Parser { format, cwd, cwd_alt, steps: vec![], index: HashMap::new(), final_text: None, plain: String::new(), usage: Usage::default() }
     }
 
     /// Ruta relativa al proyecto si está dentro de él.
@@ -304,6 +348,20 @@ impl Parser {
                 }
             }
             Some("result") => {
+                // Uso y coste del resultado: las cachés creadas/leídas ya son tokens de entrada.
+                let u = &v["usage"];
+                if u.is_object() {
+                    self.usage.add(&Usage {
+                        input_tokens: Some(
+                            u["input_tokens"].as_u64().unwrap_or(0)
+                                + u["cache_creation_input_tokens"].as_u64().unwrap_or(0)
+                                + u["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                        ),
+                        output_tokens: Some(u["output_tokens"].as_u64().unwrap_or(0)),
+                        cost_usd: v["total_cost_usd"].as_f64(),
+                        requests: None,
+                    });
+                }
                 if let Some(r) = v.get("result").and_then(Value::as_str) {
                     self.final_text = Some(r.to_string());
                 }
@@ -324,6 +382,17 @@ impl Parser {
 
     fn feed_codex(&mut self, v: &Value) -> Vec<Step> {
         let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
+        if ty == "turn.completed" {
+            // Uso del turno (los tokens de entrada ya incluyen los de caché).
+            let u = &v["usage"];
+            self.usage.add(&Usage {
+                input_tokens: Some(u["input_tokens"].as_u64().unwrap_or(0)),
+                output_tokens: Some(u["output_tokens"].as_u64().unwrap_or(0)),
+                cost_usd: None,
+                requests: None,
+            });
+            return vec![];
+        }
         if ty == "error" || ty == "turn.failed" {
             let msg = str_field(v, &["message"]).map(str::to_string).or_else(|| v["error"]["message"].as_str().map(str::to_string)).unwrap_or_default();
             return vec![self.put(Step { id: format!("error-{}", self.steps.len()), kind: "error".into(), detail: msg, status: "error".into(), ..Default::default() })];
@@ -433,6 +502,21 @@ impl Parser {
                 let msg = v["error"]["data"]["message"].as_str().or(v["error"]["message"].as_str()).unwrap_or("Error").to_string();
                 vec![self.put(Step { id: format!("error-{}", self.steps.len()), kind: "error".into(), detail: msg, status: "error".into(), ..Default::default() })]
             }
+            Some("step_finish") => {
+                // Uso del paso: las cachés cuentan como entrada y la razón como salida.
+                let t = &part["tokens"];
+                self.usage.add(&Usage {
+                    input_tokens: Some(
+                        t["input"].as_u64().unwrap_or(0)
+                            + t["cache"]["read"].as_u64().unwrap_or(0)
+                            + t["cache"]["write"].as_u64().unwrap_or(0),
+                    ),
+                    output_tokens: Some(t["output"].as_u64().unwrap_or(0) + t["reasoning"].as_u64().unwrap_or(0)),
+                    cost_usd: part["cost"].as_f64(),
+                    requests: None,
+                });
+                vec![]
+            }
             _ => vec![],
         }
     }
@@ -475,6 +559,16 @@ impl Parser {
                 }
             }
             Some("result") => {
+                // Uso de tokens en el resultado (la ruta exacta varía según la versión de agy).
+                let u = if v["usage"].is_object() { &v["usage"] } else { &v["result"]["usage"] };
+                if u.is_object() {
+                    self.usage.add(&Usage {
+                        input_tokens: Some(u64_field(u, &["input_tokens", "inputTokens", "prompt_tokens"])),
+                        output_tokens: Some(u64_field(u, &["output_tokens", "outputTokens", "completion_tokens"])),
+                        cost_usd: None,
+                        requests: None,
+                    });
+                }
                 let r = &v["result"];
                 if let Some(text) = r["response"].as_str() {
                     self.final_text = Some(text.trim().to_string());
@@ -523,8 +617,30 @@ impl Parser {
                 let msg = d["message"].as_str().unwrap_or("Error").to_string();
                 vec![self.put(Step { id: format!("error-{}", self.steps.len()), kind: "error".into(), detail: msg, status: "error".into(), ..Default::default() })]
             }
+            Some("result") => {
+                // Peticiones premium y tokens del resultado; Copilot los informa en sitios distintos.
+                let requests = v["premiumRequests"].as_f64()
+                    .or_else(|| d["premiumRequests"].as_f64())
+                    .or_else(|| v["usage"]["premiumRequests"].as_f64())
+                    .or_else(|| d["usage"]["premiumRequests"].as_f64());
+                let input = v["inputTokens"].as_u64()
+                    .or_else(|| d["inputTokens"].as_u64())
+                    .or_else(|| v["usage"]["inputTokens"].as_u64())
+                    .or_else(|| d["usage"]["inputTokens"].as_u64());
+                let output = v["outputTokens"].as_u64()
+                    .or_else(|| d["outputTokens"].as_u64())
+                    .or_else(|| v["usage"]["outputTokens"].as_u64())
+                    .or_else(|| d["usage"]["outputTokens"].as_u64());
+                self.usage.add(&Usage { input_tokens: input, output_tokens: output, cost_usd: None, requests });
+                vec![]
+            }
             _ => vec![],
         }
+    }
+
+    /// Uso acumulado (tokens, coste, peticiones) de la CLI.
+    pub fn usage(&self) -> Usage {
+        self.usage.clone()
     }
 
     /// Respuesta final del agente: la que da la CLI o, si no, el último texto.
@@ -630,6 +746,73 @@ mod tests {
         assert_eq!(p.final_text(), "Añadido.");
         let steps = p.finish();
         assert_eq!((steps[0].kind.as_str(), steps[0].detail.as_str()), ("edit", "a.txt"));
+    }
+
+    #[test]
+    fn claude_uso_y_coste() {
+        let p = run(Format::Claude, &[
+            r#"{"type":"result","total_cost_usd":0.0123,"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":2000,"output_tokens":50}}"#,
+        ]);
+        let u = p.usage();
+        assert_eq!(u.input_tokens, Some(2110));
+        assert_eq!(u.output_tokens, Some(50));
+        assert!((u.cost_usd.unwrap() - 0.0123).abs() < 1e-9);
+    }
+
+    #[test]
+    fn codex_uso_acumulado() {
+        let p = run(Format::Codex, &[
+            r#"{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":800,"output_tokens":300}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}"#,
+        ]);
+        let u = p.usage();
+        assert_eq!(u.input_tokens, Some(1300));
+        assert_eq!(u.output_tokens, Some(320));
+        assert_eq!(u.cost_usd, None);
+    }
+
+    #[test]
+    fn opencode_uso_del_paso() {
+        let p = run(Format::OpenCode, &[
+            r#"{"type":"step_finish","part":{"tokens":{"input":500,"output":40,"reasoning":10,"cache":{"read":100,"write":0}},"cost":0.002}}"#,
+        ]);
+        let u = p.usage();
+        assert_eq!(u.input_tokens, Some(600));
+        assert_eq!(u.output_tokens, Some(50));
+        assert!((u.cost_usd.unwrap() - 0.002).abs() < 1e-9);
+    }
+
+    #[test]
+    fn agy_uso_del_resultado() {
+        let p = run(Format::Agy, &[
+            r#"{"event":"result","result":{"status":"SUCCESS","response":"ok","usage":{"inputTokens":7,"outputTokens":3}}}"#,
+        ]);
+        let u = p.usage();
+        assert_eq!(u.input_tokens, Some(7));
+        assert_eq!(u.output_tokens, Some(3));
+    }
+
+    #[test]
+    fn copilot_peticiones_premium() {
+        let p = run(Format::Copilot, &[r#"{"type":"result","data":{"premiumRequests":1}}"#]);
+        let u = p.usage();
+        assert!((u.requests.unwrap() - 1.0).abs() < 1e-9);
+        assert_eq!(u.input_tokens, None);
+    }
+
+    #[test]
+    fn uso_suma() {
+        let mut u = Usage::default();
+        u.add(&Usage::default());
+        assert_eq!(u, Usage::default());
+        u.add(&Usage { input_tokens: Some(2), ..Default::default() });
+        assert_eq!(u.input_tokens, Some(2));
+    }
+
+    #[test]
+    fn claude_sin_uso_deja_default() {
+        let p = run(Format::Claude, &[r#"{"type":"result","result":"Hecho.","is_error":false}"#]);
+        assert_eq!(p.usage(), Usage::default());
     }
 
     #[test]

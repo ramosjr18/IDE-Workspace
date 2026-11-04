@@ -15,6 +15,7 @@ mod council;
 mod env;
 mod panes;
 mod project;
+mod roles;
 mod store;
 mod stream;
 mod term;
@@ -282,16 +283,23 @@ async fn chat(
 
 // ---------- Consejo de agentes ----------
 
-#[derive(Serialize)]
-struct RoleInfo {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
+/// Roles disponibles en el consejo, tal como están configurados.
+#[tauri::command]
+fn council_roles() -> Vec<roles::Role> {
+    roles::load().roles
 }
 
+/// Roles y plantillas del consejo, para editarlos desde la app.
 #[tauri::command]
-fn council_roles() -> Vec<RoleInfo> {
-    council::ROLES.iter().map(|(id, name, description)| RoleInfo { id, name, description }).collect()
+fn council_config_get() -> roles::Config {
+    roles::load()
+}
+
+/// Guarda la configuración y devuelve la que queda vigente.
+#[tauri::command]
+fn council_config_save(config: roles::Config) -> Result<roles::Config, String> {
+    roles::save(&config)?;
+    Ok(roles::load())
 }
 
 /// Contexto inicial del consejo: la conversación actual en texto (lo más reciente, hasta ~12 000 caracteres).
@@ -303,11 +311,23 @@ fn council_context(conversation_id: Option<String>) -> String {
     for m in conv.messages.iter().rev() {
         let who = if m.role == "user" { "Usuario" } else { m.agent_name.as_deref().unwrap_or("Asistente") };
         let line = format!("[{who}]: {}", m.text.trim());
-        total += line.chars().count();
-        if total > 12_000 && !lines.is_empty() {
-            break;
+        let line_len = line.chars().count();
+        if lines.is_empty() {
+            if line_len > 12_000 {
+                let truncated: String = line.chars().skip(line_len.saturating_sub(12_000)).collect();
+                lines.push(truncated);
+                break;
+            } else {
+                total += line_len;
+                lines.push(line);
+            }
+        } else {
+            if total + line_len > 12_000 {
+                break;
+            }
+            total += line_len;
+            lines.push(line);
         }
-        lines.push(line);
     }
     lines.reverse();
     lines.join("\n\n")
@@ -346,7 +366,7 @@ fn council_start(
     judge_max_rounds: u32,
 ) -> Result<council::Council, String> {
     let members = members.into_iter().map(|m| council::NewMember { agent: m.agent, role: m.role }).collect();
-    let judge = council::Judge { enabled: judge_enabled, pool: judge_pool, max_rounds: judge_max_rounds.min(5), used_rounds: 0 };
+    let judge = council::Judge { enabled: judge_enabled, pool: judge_pool, max_rounds: judge_max_rounds.min(3), used_rounds: 0 };
     let c = council::create(&current.get()?, conversation_id, topic, output, context, members, moderator, judge)?;
     council::launch(app, runs.inner().clone(), c.clone(), council::Plan::Full)?;
     Ok(c)
@@ -427,6 +447,18 @@ fn council_approve(app: AppHandle, id: String, document: String) -> Result<Appro
         }],
     )?;
     Ok(Approved { council: c, conversation_id: conv.id })
+}
+
+/// Lee el layout de la pizarra (Excalidraw) del tablero del consejo; None si no hay pizarra guardada.
+#[tauri::command]
+fn council_board_get(id: String) -> Option<serde_json::Value> {
+    council::board_get(&id)
+}
+
+/// Guarda el layout de la pizarra del tablero del consejo.
+#[tauri::command]
+fn council_board_save(id: String, board: serde_json::Value) -> Result<(), String> {
+    council::board_save(&id, &board)
 }
 
 #[tauri::command]
@@ -615,6 +647,8 @@ pub fn run() {
             chat,
             cancel_chat,
             council_roles,
+            council_config_get,
+            council_config_save,
             council_context,
             council_list,
             council_get,
@@ -623,6 +657,8 @@ pub fn run() {
             council_comment,
             council_cancel,
             council_approve,
+            council_board_get,
+            council_board_save,
             list_conversations,
             get_conversation,
             term_start,
