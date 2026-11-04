@@ -189,6 +189,7 @@
   .member-row select { flex: 1; }
   .member-row.unavailable { opacity: .5; }
   .role-rows { display: flex; flex-direction: column; gap: 8px; font-weight: 400; }
+  #oaForm[hidden] { display: none; }
   .role-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
   .role-row textarea { grid-column: 1 / -1; font: inherit; font-size: 13px; line-height: 1.4; }
   .role-row .muted { font-size: 12px; }
@@ -406,6 +407,7 @@
     <button id="reset" type="button" class="item"><i class="codicon codicon-add"></i> Nueva conversación</button>
     <button id="menuCouncil" type="button" class="item"><i class="codicon codicon-organization"></i> Convocar consejo</button>
     <button id="menuRoles" type="button" class="item"><i class="codicon codicon-account"></i> Roles y plantillas</button>
+    <button id="menuOwnAgents" type="button" class="item"><i class="codicon codicon-hubot"></i> Agentes propios</button>
     <div id="convs" class="conv-list"></div>
   </section>
   <section class="needs-project">
@@ -607,6 +609,31 @@
   </form>
 </dialog>
 
+<dialog id="ownAgentsDialog">
+  <div class="dlg-head"><h2>Agentes propios</h2><button type="button" data-close>Cerrar</button></div>
+  <div class="council-form">
+    <div id="oaList" class="role-rows"></div>
+    <button type="button" id="oaNew">Nuevo agente</button>
+    <form id="oaForm" class="role-rows" hidden>
+      <label class="field">Nombre <input id="oaName" autocomplete="off"></label>
+      <label class="field">Instrucciones <textarea id="oaInstructions" rows="6"></textarea></label>
+      <div class="member-row">
+        <label>Permisos <select id="oaWrite"><option value="no">Solo lectura</option><option value="si">Escritura</option></select></label>
+        <label>Cuándo <select id="oaTrigger"><option value="manual">A mano</option><option value="tras-sintesis">Tras una síntesis del consejo</option><option value="antes-de-commit">Antes de un commit</option><option value="al-guardar">Al guardar un archivo</option></select></label>
+      </div>
+      <div class="field">CLIs <span class="muted">(ninguna marcada = cualquiera disponible)</span><div id="oaClis" class="member-row" style="flex-wrap:wrap"></div></div>
+      <div class="member-row">
+        <label>Selección <select id="oaRandom"><option value="si">Una al azar (si falla, la siguiente)</option><option value="no">La primera de la lista</option></select></label>
+        <label>Dónde <select id="oaSource"><option value="app">En la app (todos los proyectos)</option><option value="proyecto">En este proyecto (.ide-agents/)</option></select></label>
+        <label><input type="checkbox" id="oaEnabled"> Activo</label>
+      </div>
+      <p class="muted">«Antes de un commit» y «Al guardar un archivo» se guardan, pero todavía no se ejecutan solos.</p>
+      <p class="step-error" id="oaError" hidden></p>
+      <div class="dlg-foot"><button type="button" id="oaCancel">Cancelar</button><button type="submit" class="primary">Guardar agente</button></div>
+    </form>
+  </div>
+</dialog>
+
 <dialog id="termDialog">
   <div class="dlg-head"><h2 id="termTitle">Terminal</h2><button type="button" data-close>Cerrar</button></div>
   <div id="term"></div>
@@ -715,6 +742,7 @@
 
   $('menuCouncil').addEventListener('click', () => openCouncilDialog(''));
   $('menuRoles').addEventListener('click', () => openRolesDialog());
+  $('menuOwnAgents').addEventListener('click', () => openOwnAgents());
   $('reset').addEventListener('click', () => {
     loadConversation(null);
     loadConversationList();
@@ -1705,6 +1733,8 @@
   // ---------- Consejo de agentes ----------
   let councilRoles = [];
   let rolesTemplates = []; // plantillas del consejo, tal como las devuelve council_config_get
+  let ownAgents = []; // agentes propios guardados, tal como los devuelve own_agents_list
+  let oaEditing = null; // agente propio que se está editando, o null si es uno nuevo
   let council = null; // consejo abierto en el tablero
   const councilActivity = {}; // agente → lo que está haciendo ahora
   let councilReplyTo = null;
@@ -2068,6 +2098,109 @@
       $('rError').hidden = false;
     }
   });
+
+  // ----- Agentes propios -----
+  // Fila por agente propio: «nombre · trigger · origen (· desactivado)» con «Editar» y, salvo el evaluador de la app, «Quitar».
+  function ownAgentRow(a) {
+    const out = { manual: 'A mano', 'tras-sintesis': 'Tras una síntesis del consejo', 'antes-de-commit': 'Antes de un commit', 'al-guardar': 'Al guardar un archivo' };
+    const edit = el('button', { type: 'button', textContent: 'Editar' });
+    edit.addEventListener('click', () => editOwnAgent(a));
+    const remove = (a.id === 'evaluador' && a.source === 'app') ? null : el('button', { type: 'button', textContent: 'Quitar' });
+    if (remove) remove.addEventListener('click', () => removeOwnAgent(a));
+    return el('div', { className: 'role-row' },
+      el('span', { textContent: [a.name, out[a.trigger] || a.trigger, a.source, a.enabled ? null : 'desactivado'].filter((x) => x !== null).join(' · ') }),
+      edit, remove);
+  }
+
+  // Rellena la lista de agentes propios: una fila por agente, o «No hay agentes.» si no hay ninguno.
+  function renderOwnAgents() {
+    const list = $('oaList');
+    list.replaceChildren();
+    if (!ownAgents.length) list.appendChild(el('span', { className: 'muted', textContent: 'No hay agentes.' }));
+    ownAgents.forEach((a) => list.appendChild(ownAgentRow(a)));
+  }
+
+  // Abre el diálogo: pide la lista de agentes propios y muestra la lista, no el formulario.
+  async function openOwnAgents() {
+    closeMenu();
+    ownAgents = await invoke('own_agents_list');
+    renderOwnAgents();
+    $('oaForm').hidden = true;
+    $('oaError').hidden = true;
+    $('oaNew').hidden = false;
+    $('ownAgentsDialog').showModal();
+  }
+
+  // Rellena el formulario con el agente a editar, o con uno nuevo vacío, y las casillas de CLIs disponibles.
+  function editOwnAgent(a) {
+    oaEditing = a || null;
+    const fresh = a || { name: '', instructions: '', write: false, trigger: 'manual', clis: [], random: true, enabled: true, source: 'app' };
+    $('oaName').value = fresh.name;
+    $('oaInstructions').value = fresh.instructions;
+    $('oaWrite').value = fresh.write ? 'si' : 'no';
+    $('oaTrigger').value = fresh.trigger;
+    $('oaRandom').value = fresh.random ? 'si' : 'no';
+    $('oaEnabled').checked = fresh.enabled;
+    $('oaSource').value = fresh.source;
+    $('oaSource').querySelector('option[value="proyecto"]').disabled = !project;
+    const clis = $('oaClis');
+    clis.replaceChildren();
+    agents.forEach((c) => {
+      const box = el('input', { type: 'checkbox', value: c.id, checked: fresh.clis.includes(c.id) });
+      clis.appendChild(el('label', {}, box, c.name));
+    });
+    $('oaForm').hidden = false;
+    $('oaNew').hidden = true;
+    $('oaError').hidden = true;
+    $('oaName').focus();
+  }
+
+  // Abre el formulario para crear un agente nuevo.
+  $('oaNew').addEventListener('click', () => editOwnAgent(null));
+
+  // Cierra el formulario y vuelve a la lista de agentes.
+  $('oaCancel').addEventListener('click', () => {
+    $('oaForm').hidden = true;
+    $('oaNew').hidden = false;
+  });
+
+  // Guarda el agente: conserva su id si edita y, si no, genera uno nuevo a partir del nombre.
+  $('oaForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('oaError').hidden = true;
+    const name = $('oaName').value.trim();
+    const agent = {
+      id: oaEditing?.id || slugRole(name, ownAgents.map((x) => x.id)),
+      name,
+      write: $('oaWrite').value === 'si',
+      trigger: $('oaTrigger').value,
+      clis: [...$('oaClis').querySelectorAll('input:checked')].map((b) => b.value),
+      random: $('oaRandom').value === 'si',
+      enabled: $('oaEnabled').checked,
+      instructions: $('oaInstructions').value.trim(),
+      source: $('oaSource').value,
+    };
+    try {
+      ownAgents = await invoke('own_agent_save', { agent });
+      renderOwnAgents();
+      $('oaForm').hidden = true;
+      $('oaNew').hidden = false;
+    } catch (err) {
+      $('oaError').textContent = String(err);
+      $('oaError').hidden = false;
+    }
+  });
+
+  // Quita el agente de la configuración y refresca la lista; si falla, muestra el motivo en el formulario.
+  async function removeOwnAgent(a) {
+    try {
+      ownAgents = await invoke('own_agent_delete', { agent: a });
+      renderOwnAgents();
+    } catch (err) {
+      $('oaError').textContent = String(err);
+      $('oaError').hidden = false;
+    }
+  }
 
   function selectedMembers() {
     return [...$('cMembers').querySelectorAll('.member-row')]

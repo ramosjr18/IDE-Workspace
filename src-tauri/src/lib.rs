@@ -355,6 +355,29 @@ fn council_config_save(config: roles::Config) -> Result<roles::Config, String> {
     Ok(roles::load())
 }
 
+/// Agentes propios de la app y del proyecto, tal como están configurados.
+#[tauri::command]
+fn own_agents_list(current: State<'_, CurrentProject>) -> Vec<own_agents::OwnAgent> {
+    let project = current.get().ok();
+    own_agents::load_all(project.as_deref())
+}
+
+/// Guarda el agente propio y devuelve la lista actualizada.
+#[tauri::command]
+fn own_agent_save(current: State<'_, CurrentProject>, agent: own_agents::OwnAgent) -> Result<Vec<own_agents::OwnAgent>, String> {
+    let project = current.get().ok();
+    own_agents::save(project.as_deref(), &agent)?;
+    Ok(own_agents::load_all(project.as_deref()))
+}
+
+/// Borra el agente propio y devuelve la lista actualizada.
+#[tauri::command]
+fn own_agent_delete(current: State<'_, CurrentProject>, agent: own_agents::OwnAgent) -> Result<Vec<own_agents::OwnAgent>, String> {
+    let project = current.get().ok();
+    own_agents::delete(project.as_deref(), &agent)?;
+    Ok(own_agents::load_all(project.as_deref()))
+}
+
 /// Contexto inicial del consejo: la conversación actual en texto (lo más reciente, hasta ~12 000 caracteres).
 #[tauri::command]
 fn council_context(conversation_id: Option<String>) -> String {
@@ -742,6 +765,9 @@ pub fn run() {
             council_roles,
             council_config_get,
             council_config_save,
+            own_agents_list,
+            own_agent_save,
+            own_agent_delete,
             council_context,
             council_list,
             council_get,
