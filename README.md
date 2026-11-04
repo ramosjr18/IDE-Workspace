@@ -157,6 +157,31 @@ Al aprobar, el documento se guarda numerado en el repo (por ejemplo `docs/adr/00
 
 Durante el consejo los agentes trabajan en **modo solo lectura**: leen el repo para fundamentar su opinión, pero no lo modifican (Claude `--permission-mode plan`, Codex `--sandbox read-only`, OpenCode `--agent plan`, Antigravity `--mode plan`, Copilot sin herramientas de escritura ni shell). Cada participante hace dos llamadas y el moderador una; con el evaluador activado hay al menos una llamada más, y hasta participantes + 2 por cada ronda extra. El diálogo lo indica antes de empezar.
 
+Las instrucciones del evaluador, sus CLIs y si está activo se editan como cualquier agente propio (ver «Agentes propios»).
+
+## Agentes propios
+
+Además de los agentes CLI, puedes definir tus propios agentes en archivos Markdown.
+
+- Los agentes propios se definen en archivos `.md`: una cabecera entre líneas `---` con `id`, `nombre`, `permisos` (lectura | escritura), `cuando` (manual | tras-sintesis | antes-de-commit | al-guardar), `clis` (separadas por comas; vacío = cualquiera disponible), `seleccion` (azar | fija) y `activo` (si | no), y debajo las instrucciones.
+- Se buscan en la carpeta de datos de la app (`~/.ide-workspace-chat/agents/`, o bajo `CHAT_DATA_DIR`) y en el proyecto (`.ide-agents/`). Si el mismo `id` está en los dos, gana el del proyecto.
+- Se gestionan en **☰ → Agentes propios**: crear, editar, activar o desactivar y quitar.
+- El evaluador independiente del consejo es uno de ellos: `evaluador.md` se crea solo la primera vez, con sus instrucciones de siempre. Se puede editar (instrucciones, CLIs, selección) o desactivar, pero no quitar. Lo que tiene que responder (el JSON con el veredicto) sigue en el código, porque la app lo interpreta.
+- De momento, los de «antes de un commit» y «al guardar un archivo» se guardan pero no se ejecutan solos.
+
+```md
+---
+id: revisor
+nombre: Revisor de seguridad
+permisos: lectura
+cuando: manual
+clis: claude, codex
+seleccion: azar
+activo: si
+---
+Revisa los cambios buscando secretos, permisos excesivos y entradas sin validar.
+```
+
 ## Maquetas
 
 Una maqueta es una página HTML de ejemplo que genera un agente, para ver cómo sería una propuesta.
@@ -190,6 +215,7 @@ Mientras un agente trabaja, el panel muestra el archivo que está editando (bot�
 | Consejo | `src-tauri/src/council.rs` | Fases del consejo, prompts, tarjetas, síntesis y documento final. |
 | Pizarra | `pizarra/entry.jsx`, `ui/pizarra-escena.js` | Excalidraw empaquetado con esbuild (`scripts/pizarra.mjs`) y el paso de tarjetas a elementos de la pizarra. |
 | Roles | `src-tauri/src/roles.rs` | Roles del consejo y plantillas, editables desde la app (`council-config.json`). |
+| Agentes propios | `src-tauri/src/own_agents.rs` | Agentes definidos en archivos `.md` (app y proyecto), entre ellos el evaluador. |
 | Pasos en vivo | `src-tauri/src/stream.rs` | Traduce la salida JSON de cada CLI a pasos comunes (comando, edición, lectura, texto…). |
 | Proyecto | `src-tauri/src/project.rs` | Carpeta donde trabajan los agentes y comando `agentes`. |
 | Panel de archivos | `src-tauri/src/workspace.rs` | Árbol del proyecto, estado git, líneas cambiadas, guardar y vigilancia de la carpeta. |
