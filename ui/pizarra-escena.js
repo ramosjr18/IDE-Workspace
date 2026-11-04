@@ -27,6 +27,40 @@
     return Math.min(400, 60 + 20 * Math.ceil(text.length / 45));
   }
 
+  // Geometría de la flecha de respuesta: inicio en el borde del origen y fin en el del destino, con el segundo punto relativo al primero.
+  function arrowGeometry(from, to) {
+    let sx, sy, ex, ey;
+    if (from.x > to.x) {
+      // Origen a la derecha del destino: del borde izquierdo del origen al borde derecho del destino.
+      sx = from.x;
+      sy = from.y + from.height / 2;
+      ex = to.x + 300;
+      ey = to.y + to.height / 2;
+    } else if (from.x < to.x) {
+      // Origen a la izquierda del destino: del borde derecho del origen al borde izquierdo del destino.
+      sx = from.x + 300;
+      sy = from.y + from.height / 2;
+      ex = to.x;
+      ey = to.y + to.height / 2;
+    } else {
+      // Misma columna: del borde más cercano en y del origen al borde correspondiente del destino.
+      if (from.y > to.y) {
+        // Origen debajo del destino: del borde superior del origen al borde inferior del destino.
+        sx = from.x + 150;
+        sy = from.y;
+        ex = to.x + 150;
+        ey = to.y + to.height;
+      } else {
+        // Origen encima del destino: del borde inferior del origen al borde superior del destino.
+        sx = from.x + 150;
+        sy = from.y + from.height;
+        ex = to.x + 150;
+        ey = to.y;
+      }
+    }
+    return { x: sx, y: sy, points: [[0, 0], [ex - sx, ey - sy]] };
+  }
+
   // Lista las claves de columna candidatas: agentes de members en orden, luego judge, user y autores sueltos.
   function columnCandidates(council, cards) {
     const keys = [];
@@ -107,11 +141,13 @@
       if (!rec.isNew || !rec.card.replyTo) continue;
       const target = byId.get(rec.card.replyTo);
       if (!target || !target.isNew) continue;
+      const geo = arrowGeometry(rec, target);
       out.push({
         type: "arrow",
         id: "reply-" + rec.card.id + "-" + rec.card.replyTo,
-        x: 0,
-        y: 0,
+        x: geo.x,
+        y: geo.y,
+        points: geo.points,
         start: { id: rec.id },
         end: { id: cardElementId(rec.card.replyTo) },
         customData: { replyTo: rec.card.replyTo },

@@ -44,12 +44,15 @@ test("con la pizarra vacía añade todas las tarjetas con las x de sus columnas 
     esqueletos.filter((e) => e.type === "rectangle").map((e) => e.y),
     [0, 0, 104, 0, 0]
   );
-  // La flecha de respuesta va al final con sus extremos enlazados.
+  // La flecha de respuesta va al final con sus extremos enlazados y su geometría.
+  // C2 (codex, x 340) está a la derecha de C1 (claude, x 0): sale del borde izquierdo de C2
+  // y llega al borde derecho de C1, con el segundo punto relativo al inicio.
   assert.deepEqual(esqueletos[5], {
     type: "arrow",
     id: "reply-C2-C1",
-    x: 0,
-    y: 0,
+    x: 340,
+    y: 40,
+    points: [[0, 0], [-40, 0]],
     start: { id: "card-C2" },
     end: { id: "card-C1" },
     customData: { replyTo: "C1" },
@@ -109,6 +112,72 @@ test("la flecha solo sale cuando la tarjeta y su destino son nuevas", () => {
   const esqueletos = escena.missingSkeletons(conC4, []);
   assert.ok(porId(esqueletos, "card-C4"));
   assert.ok(!porId(esqueletos, "reply-C4-CX"));
+});
+
+test("la flecha de respuesta va del borde del origen al borde del destino según su posición", () => {
+  // Consejo con las cuatro situaciones: destino a la izquierda, a la derecha y misma columna encima y debajo.
+  // Todas las alturas son 80 y las columnas son claude 0 y codex 340.
+  const consejoFlechas = {
+    members: [{ agent: "claude" }, { agent: "codex" }],
+    cards: [
+      { id: "D1", round: 0, author: "codex", authorName: "Codex", kind: "riesgo", text: "riesgo en el paso 3" },
+      { id: "D2", round: 0, author: "claude", authorName: "Claude", kind: "propuesta", replyTo: "D1", text: "respuesta al riesgo" },
+      { id: "D3", round: 0, author: "claude", authorName: "Claude", kind: "apoyo", replyTo: "D4", text: "apoyo a la propuesta" },
+      { id: "D4", round: 0, author: "claude", authorName: "Claude", kind: "comentario", text: "comentario aparte" },
+      { id: "D5", round: 0, author: "claude", authorName: "Claude", kind: "pregunta", replyTo: "D3", text: "pregunta previa" },
+      { id: "D6", round: 0, author: "codex", authorName: "Codex", kind: "riesgo", replyTo: "D2", text: "riesgo cruzado" },
+    ],
+  };
+  const esqueletos = escena.missingSkeletons(consejoFlechas, []);
+  // Posiciones de las tarjetas: D1 (340, 0), D2 (0, 0), D3 (0, 104), D4 (0, 208), D5 (0, 312) y D6 (340, 104).
+  assert.deepEqual(
+    esqueletos.filter((e) => e.type === "rectangle").map((e) => [e.id, e.x, e.y]),
+    [["card-D1", 340, 0], ["card-D2", 0, 0], ["card-D3", 0, 104], ["card-D4", 0, 208], ["card-D5", 0, 312], ["card-D6", 340, 104]]
+  );
+  // Origen a la izquierda del destino (D2 → D1): del borde derecho de D2 al borde izquierdo de D1.
+  assert.deepEqual(porId(esqueletos, "reply-D2-D1"), {
+    type: "arrow",
+    id: "reply-D2-D1",
+    x: 300,
+    y: 40,
+    points: [[0, 0], [40, 0]],
+    start: { id: "card-D2" },
+    end: { id: "card-D1" },
+    customData: { replyTo: "D1" },
+  });
+  // Misma columna con el origen encima del destino (D3 → D4): del borde inferior de D3 al superior de D4.
+  assert.deepEqual(porId(esqueletos, "reply-D3-D4"), {
+    type: "arrow",
+    id: "reply-D3-D4",
+    x: 150,
+    y: 184,
+    points: [[0, 0], [0, 24]],
+    start: { id: "card-D3" },
+    end: { id: "card-D4" },
+    customData: { replyTo: "D4" },
+  });
+  // Misma columna con el origen debajo del destino (D5 → D3): del borde superior de D5 al inferior de D3.
+  assert.deepEqual(porId(esqueletos, "reply-D5-D3"), {
+    type: "arrow",
+    id: "reply-D5-D3",
+    x: 150,
+    y: 312,
+    points: [[0, 0], [0, -128]],
+    start: { id: "card-D5" },
+    end: { id: "card-D3" },
+    customData: { replyTo: "D3" },
+  });
+  // Origen a la derecha del destino (D6 → D2): del borde izquierdo de D6 al borde derecho de D2.
+  assert.deepEqual(porId(esqueletos, "reply-D6-D2"), {
+    type: "arrow",
+    id: "reply-D6-D2",
+    x: 340,
+    y: 144,
+    points: [[0, 0], [-40, -104]],
+    start: { id: "card-D6" },
+    end: { id: "card-D2" },
+    customData: { replyTo: "D2" },
+  });
 });
 
 test("el color depende del kind y la altura no pasa de 400", () => {

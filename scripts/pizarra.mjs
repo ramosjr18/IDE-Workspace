@@ -18,6 +18,8 @@ await build({
   define: {
     "process.env.NODE_ENV": '"production"',
     "import.meta.env": '{"MODE":"production","DEV":false,"PROD":true}',
+    // Anula el `define` global que crea el loader AMD de Monaco y secuestra libs UMD como es6-promise-pool.
+    define: "undefined",
   },
   loader: { ".woff2": "file" },
   outfile: "ui/vendor/pizarra/pizarra.js",
