@@ -589,10 +589,13 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
                 Ok(i) => i,
                 Err(e) => return err(e),
             };
+            // Escena guardada: la pizarra libre o el diagrama (con su código si aún no se abrió nunca).
+            let scene = if id == "proyecto" { crate::project::board_get(&root) } else { crate::project::diagram_get(&root, &id) };
+            let Some(scene) = scene else { return err("No se encontró la pizarra en disco") };
             let req = uuid::Uuid::new_v4().to_string();
             let (tx, rx) = tokio::sync::oneshot::channel();
             PENDING_IMAGES.lock().unwrap().insert(req.clone(), tx);
-            let _ = app.emit("board-image", serde_json::json!({ "req": req.clone(), "project": root.to_string_lossy(), "id": id }));
+            let _ = app.emit("board-image", serde_json::json!({ "req": req.clone(), "id": id, "scene": scene }));
             match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
                 Ok(Ok(Ok(bytes))) => match std::fs::write(&path, bytes) {
                     Ok(()) => Reply { ok: true, board: Some(path), ..Default::default() },
