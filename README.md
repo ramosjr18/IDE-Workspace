@@ -85,6 +85,12 @@ Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
 4. **Evaluar** (si está activado): ver «Evaluador independiente».
 5. **Revisión**: editas el documento si quieres y eliges **Aprobar y guardar**, **Otra ronda** o **Rehacer síntesis**. También puedes añadir tus comentarios, que cuentan en la siguiente ronda.
 
+### Coste y tiempo
+
+- Cada llamada a un agente durante el consejo se anota con su duración y, si la CLI lo informa, tokens, coste en dólares y peticiones (Copilot). También las que fallan.
+- El tablero muestra bajo las fases una línea «Uso del consejo» con el total; al pasar el ratón por encima se ve el desglose por agente. Cada columna muestra el uso de su agente y la de síntesis el del moderador.
+- Qué informa cada CLI: Claude da tokens y coste; Codex da tokens; Copilot da peticiones premium; Antigravity, tokens si los incluye en su resultado; OpenCode solo en versiones que emiten el evento `step_finish` (las recientes no lo hacen). Gemini no da nada. Si una CLI no informa de un dato, no se muestra (no aparece como 0).
+
 ### Evaluador independiente
 
 Es el primer agente propio del IDE. Después de cada síntesis, un evaluador revisa con ojos nuevos si lo convergido es correcto: si responde al tema, recoge las objeciones importantes, no contradice el código y se puede aplicar.
@@ -138,6 +144,7 @@ Requisitos: [Rust](https://rustup.rs) y Node.js 18 o superior. En Linux, además
 npm install
 npm run dev      # abre la app en modo desarrollo (copia Monaco y xterm a ui/vendor)
 npm run build    # genera el instalador de este sistema
+npm run test:ui  # tests de la parte web (node --test)
 cd src-tauri && cargo test                           # tests
 cd src-tauri && cargo test -- --ignored --nocapture  # tests con las CLIs reales
 ```
