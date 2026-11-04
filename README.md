@@ -123,12 +123,21 @@ Al aprobar, el documento se guarda numerado en el repo (por ejemplo `docs/adr/00
 
 Durante el consejo los agentes trabajan en **modo solo lectura**: leen el repo para fundamentar su opinión, pero no lo modifican (Claude `--permission-mode plan`, Codex `--sandbox read-only`, OpenCode `--agent plan`, Antigravity `--mode plan`, Copilot sin herramientas de escritura ni shell). Cada participante hace dos llamadas y el moderador una; con el evaluador activado hay al menos una llamada más, y hasta participantes + 2 por cada ronda extra. El diálogo lo indica antes de empezar.
 
+## Maquetas
+
+Una maqueta es una página HTML de ejemplo que genera un agente, para ver cómo sería una propuesta.
+
+- `/maqueta tema` en el chat pide al agente elegido una maqueta HTML en `docs/maquetas/<tema>.html`: un único archivo autocontenido, sin recursos externos.
+- En un consejo aprobado, el botón «Maquetar esta decisión» la pide basándose en el documento aprobado.
+- En la pestaña **Archivo**, los `.html` tienen un botón de vista previa. Los de `docs/maquetas/` se abren ya en vista previa. Se refresca sola cuando el agente edita el archivo y también con los cambios sin guardar.
+- La maqueta se muestra aislada (iframe con sandbox): puede ejecutar su JavaScript, pero no acceder a la app ni a tus archivos.
+
 ## Panel de archivos (como VS Code)
 
 A la derecha hay un panel con tres pestañas: Worktree, Archivo y Consejo (ver arriba). Se oculta desde **☰ → Vista** y se ensancha arrastrando su borde.
 
 - **Worktree**: el explorador del proyecto, con los colores y letras de git de VS Code (**M** modificado, **U** sin seguimiento, **A** añadido, **D** borrado) y la rama actual. Respeta `.gitignore`. El botón de filtro muestra solo los archivos con cambios.
-- **Archivo**: el editor de VS Code (Monaco). Tiene resaltado de sintaxis, minimapa y búsqueda (⌘F / Ctrl+F), y se puede editar y guardar (⌘S / Ctrl+S). En el margen, barras como las de VS Code: verde para líneas añadidas, azul para modificadas y un triángulo rojo donde se borró algo. El botón de comparar abre la vista de cambios respecto al último commit.
+- **Archivo**: el editor de VS Code (Monaco). Tiene resaltado de sintaxis, minimapa y búsqueda (⌘F / Ctrl+F), y se puede editar y guardar (⌘S / Ctrl+S). En el margen, barras como las de VS Code: verde para líneas añadidas, azul para modificadas y un triángulo rojo donde se borró algo. El botón de comparar abre la vista de cambios respecto al último commit. Los `.html` se pueden ver como página (ver «Maquetas»).
 
 Mientras un agente trabaja, el panel muestra el archivo que está editando (botón del ojo, «Seguir»). Si cambia el archivo abierto, se recarga sin perder la posición; si tenías cambios sin guardar, avisa en lugar de sobrescribirlos.
 
