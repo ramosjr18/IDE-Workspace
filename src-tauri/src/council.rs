@@ -102,6 +102,21 @@ pub struct Verdict {
     pub capped: bool,
 }
 
+/// Una llamada a un agente durante el consejo: cuánto tardó y qué consumió.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Call {
+    pub agent: String,
+    pub agent_name: String,
+    /// diverge | contrast | converge | judge
+    pub phase: String,
+    pub round: u32,
+    pub duration_ms: u64,
+    pub ok: bool,
+    #[serde(default)]
+    pub usage: crate::stream::Usage,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Council {
@@ -129,6 +144,9 @@ pub struct Council {
     pub judge: Judge,
     #[serde(default)]
     pub verdicts: Vec<Verdict>,
+    /// Una llamada por cada ejecución de agente durante el consejo (coste y tiempo, IDE-8).
+    #[serde(default)]
+    pub calls: Vec<Call>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -228,6 +246,7 @@ pub fn create(
         error: None,
         judge: Judge { used_rounds: 0, ..judge },
         verdicts: vec![],
+        calls: vec![],
         created_at: ts.clone(),
         updated_at: ts,
     };
@@ -446,6 +465,19 @@ pub fn add_cards(c: &mut Council, author: &str, author_name: &str, parsed: Vec<(
     }
 }
 
+/// Anota una llamada a un agente con su duración y su uso.
+fn record_call(c: &mut Council, agent: &Agent, phase: &str, started: std::time::Instant, usage: Option<&crate::stream::Usage>) {
+    c.calls.push(Call {
+        agent: agent.id.into(),
+        agent_name: agent.name.into(),
+        phase: phase.into(),
+        round: c.round,
+        duration_ms: started.elapsed().as_millis() as u64,
+        ok: usage.is_some(),
+        usage: usage.cloned().unwrap_or_default(),
+    });
+}
+
 /// Texto breve del último paso de un agente, para mostrar en su columna mientras trabaja.
 pub fn activity(step: &Step) -> String {
     let d: String = step.detail.lines().next().unwrap_or("").chars().take(80).collect();
@@ -593,8 +625,10 @@ async fn member_phase(app: &AppHandle, runs: &Runs, shared: Arc<Mutex<Council>>,
             let on_step = |step: &Step| {
                 let _ = app.emit("council-activity", ActivityEvent { council_id: &council_id, agent: agent.id, activity: activity(step) });
             };
+            let started = std::time::Instant::now();
             let result = agents::run_readonly(agent, &prompt, &cwd, on_step, cancel).await;
             let mut c = shared.lock().await;
+            record_call(&mut c, agent, if contrast { "contrast" } else { "diverge" }, started, result.as_ref().ok().map(|r| &r.usage));
             let ok = match result {
                 Ok(r) => {
                     let known: Vec<String> = c.cards.iter().map(|k| k.id.clone()).collect();
@@ -634,7 +668,13 @@ async fn converge(app: &AppHandle, runs: &Runs, shared: Arc<Mutex<Council>>) -> 
     let on_step = |step: &Step| {
         let _ = app.emit("council-activity", ActivityEvent { council_id: &id, agent: "moderator", activity: activity(step) });
     };
-    let r = agents::run_readonly(moderator, &prompt, &cwd, on_step, cancel).await?;
+    let started = std::time::Instant::now();
+    let res = agents::run_readonly(moderator, &prompt, &cwd, on_step, cancel).await;
+    {
+        let mut c = shared.lock().await;
+        record_call(&mut c, moderator, "converge", started, res.as_ref().ok().map(|r| &r.usage));
+    }
+    let r = res?;
     let mut c = shared.lock().await;
     c.synthesis = Some(parse_synthesis(&r.text));
     c.phase = "review".into();
@@ -674,7 +714,10 @@ async fn judge(app: &AppHandle, runs: &Runs, shared: Arc<Mutex<Council>>) -> Res
         let on_step = |step: &Step| {
             let _ = app.emit("council-activity", ActivityEvent { council_id: &id, agent: "judge", activity: activity(step) });
         };
-        match agents::run_readonly(agent, &prompt, &cwd, on_step, cancel).await {
+        let started = std::time::Instant::now();
+        let res = agents::run_readonly(agent, &prompt, &cwd, on_step, cancel).await;
+        record_call(&mut *shared.lock().await, agent, "judge", started, res.as_ref().ok().map(|r| &r.usage));
+        match res {
             Ok(r) => {
                 answer = Some((agent, r.text));
                 break;
@@ -852,7 +895,7 @@ mod tests {
             members: vec![member("copilot"), member("opencode")], moderator: "codex".into(), phase: "review".into(), round: 1, cards: vec![],
             synthesis: None, document_path: None, error: None,
             judge: Judge { enabled: true, pool: vec!["claude".into(), "codex".into(), "copilot".into(), "opencode".into(), "agy".into()], max_rounds: 2, used_rounds: 0 },
-            verdicts: vec![], created_at: String::new(), updated_at: String::new(),
+            verdicts: vec![], calls: vec![], created_at: String::new(), updated_at: String::new(),
         };
         let firsts: std::collections::HashSet<&str> = (0..20u64).map(|i| judge_candidates(&c, i)[0].id).collect();
         assert_eq!(firsts, ["claude", "agy"].into_iter().collect(), "primero quien no participó ni modera, y varía");
@@ -886,12 +929,45 @@ mod tests {
             error: None,
             judge: Judge::default(),
             verdicts: vec![],
+            calls: vec![],
             created_at: String::new(),
             updated_at: String::new(),
         };
         let rel = write_document(&c, "# ADR").unwrap();
         assert_eq!(rel, "docs/adr/0004-politica-de-versionado-de-la-api.md");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    fn consejo_de_prueba() -> Council {
+        let member = |a: &str| Member { agent: a.into(), agent_name: a.into(), role: "libre".into(), role_name: "Libre".into(), status: String::new(), activity: String::new() };
+        Council {
+            id: "x".into(), project: String::new(), conversation_id: None, topic: String::new(), output: "adr".into(), context: String::new(),
+            members: vec![member("copilot"), member("opencode")], moderator: "codex".into(), phase: "review".into(), round: 2, cards: vec![],
+            synthesis: None, document_path: None, error: None,
+            judge: Judge::default(),
+            verdicts: vec![], calls: vec![], created_at: String::new(), updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn llamadas_se_anotan_con_coste_y_fallos() {
+        let mut c = consejo_de_prueba();
+        record_call(&mut c, agents::get("claude").unwrap(), "diverge", std::time::Instant::now(), Some(&crate::stream::Usage { input_tokens: Some(10), ..Default::default() }));
+        record_call(&mut c, agents::get("claude").unwrap(), "diverge", std::time::Instant::now(), None);
+        assert_eq!(c.calls.len(), 2, "dos llamadas anotadas");
+        assert_eq!(c.calls[0].agent, "claude");
+        assert!(c.calls[0].ok);
+        assert_eq!(c.calls[0].usage.input_tokens, Some(10));
+        assert!(!c.calls[1].ok, "una llamada sin uso es un fallo");
+        assert_eq!(c.calls[1].usage, crate::stream::Usage::default());
+    }
+
+    #[test]
+    fn consejo_viejo_sin_calls_deserializa_vacio() {
+        let mut value = serde_json::to_value(&consejo_de_prueba()).unwrap();
+        value.as_object_mut().unwrap().remove("calls");
+        let c: Council = serde_json::from_value(value).unwrap();
+        assert!(c.calls.is_empty(), "los consejos guardados antes no tienen llamadas");
     }
 }
 
