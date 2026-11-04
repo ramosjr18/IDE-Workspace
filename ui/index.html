@@ -271,6 +271,9 @@
   :root { --git-mod: #895503; --git-add: #007100; --git-del: #ad0707; }
   @media (prefers-color-scheme: dark) { :root { --git-mod: #e2c08d; --git-add: #73c991; --git-del: #c74e39; } }
   .files-tree { width: 260px; flex: none; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+  .files-splitter { width: 4px; flex: none; cursor: col-resize; margin-left: -2px; margin-right: -2px; position: relative; z-index: 1; }
+  .files-splitter:hover, .files-splitter.dragging { background: var(--me); }
+  #treeView[hidden], .files-splitter[hidden] { display: none; }
   .files-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
   #tree { flex: 1; overflow: auto; padding: 4px 0; font-size: 13px; }
   .node { display: flex; align-items: center; gap: 4px; height: 22px; padding-right: 10px; cursor: pointer; white-space: nowrap; user-select: none; }
@@ -439,7 +442,7 @@
   <div id="resizer" title="Arrastra para cambiar el ancho"></div>
   <aside id="panel">
     <div class="tabs" role="tablist">
-      <button type="button" role="tab" id="tabTree" class="tab active needs-project">Archivos <span id="treeCount" class="count"></span><span id="fileTabName" class="count"></span></button>
+      <button type="button" role="tab" id="tabTree" class="tab active needs-project">Archivos <span id="treeCount" class="count"></span> <span id="fileTabName" class="count"></span></button>
       <button type="button" role="tab" id="tabCouncil" class="tab needs-project">Consejo <span id="councilTabState" class="count"></span></button>
       <button type="button" role="tab" id="tabBoard" class="tab needs-project">Pizarra</button>
       <button type="button" role="tab" id="tabUsage" class="tab">Uso</button>
@@ -479,8 +482,10 @@
       </div>
       <div id="tree"></div>
       </div>
+      <div id="filesSplitter" class="files-splitter" title="Arrastra para cambiar el ancho del árbol"></div>
       <div id="fileView" class="files-editor">
       <div class="toolbar">
+        <button type="button" class="icon" id="toggleTree" title="Mostrar u ocultar el árbol" aria-pressed="true"><i class="codicon codicon-layout-sidebar-left"></i></button>
         <span id="filePath" class="path-label"></span>
         <span id="fileStats" class="stats"></span>
         <span class="actions">
@@ -1383,6 +1388,42 @@
     if (!['council', 'agents', 'board'].includes(name) && document.body.classList.contains('council-wide')) toggleWide(false);
   }
   $('tabTree').addEventListener('click', () => setTab('tree'));
+
+  // Aplica el ancho y la ocultación del árbol del explorador, recordados en el store
+  const applyTreeLayout = () => {
+    let w = parseInt(store.get('treeWidth'), 10);
+    if (!Number.isFinite(w) || w < 140) w = 260;
+    const oculto = store.get('treeHidden') === '1';
+    $('treeView').style.width = `${w}px`;
+    $('treeView').hidden = oculto;
+    $('filesSplitter').hidden = oculto;
+    $('toggleTree').setAttribute('aria-pressed', String(!oculto));
+  };
+  // Arrastre del separador para cambiar el ancho del árbol (se recuerda al soltar)
+  $('filesSplitter').addEventListener('pointerdown', (e) => {
+    $('filesSplitter').classList.add('dragging');
+    $('filesSplitter').setPointerCapture(e.pointerId);
+    let ancho = $('treeView').getBoundingClientRect().width;
+    const move = (ev) => {
+      const box = $('filesView').getBoundingClientRect();
+      ancho = Math.min(Math.max(ev.clientX - box.left, 140), Math.max(box.width - 240, 140));
+      $('treeView').style.width = `${ancho}px`;
+    };
+    const up = () => {
+      $('filesSplitter').classList.remove('dragging');
+      $('filesSplitter').removeEventListener('pointermove', move);
+      $('filesSplitter').removeEventListener('pointerup', up);
+      store.set('treeWidth', String(Math.round(ancho)));
+    };
+    $('filesSplitter').addEventListener('pointermove', move);
+    $('filesSplitter').addEventListener('pointerup', up);
+  });
+  // Muestra u oculta el árbol con el botón de la barra del editor
+  $('toggleTree').addEventListener('click', () => {
+    store.set('treeHidden', store.get('treeHidden') === '1' ? '0' : '1');
+    applyTreeLayout();
+  });
+  applyTreeLayout();
 
   // Mostrar/ocultar y ancho del panel (se recuerdan)
   const applyPanel = () => {
