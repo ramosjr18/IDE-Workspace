@@ -251,6 +251,7 @@
   .count { font-size: 12px; color: var(--muted); }
   .view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .view[hidden] { display: none; }
+  .files-split { flex-direction: row; }
   .toolbar { display: flex; gap: 8px; align-items: center; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--border); font-size: 13px; flex: none; min-height: 36px; }
   .toolbar .actions { margin-left: auto; display: flex; gap: 2px; flex: none; }
   button.icon { border: 0; background: transparent; padding: 3px 5px; border-radius: 5px; color: var(--muted); line-height: 1; }
@@ -269,6 +270,8 @@
   /* Explorador estilo VS Code */
   :root { --git-mod: #895503; --git-add: #007100; --git-del: #ad0707; }
   @media (prefers-color-scheme: dark) { :root { --git-mod: #e2c08d; --git-add: #73c991; --git-del: #c74e39; } }
+  .files-tree { width: 260px; flex: none; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+  .files-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
   #tree { flex: 1; overflow: auto; padding: 4px 0; font-size: 13px; }
   .node { display: flex; align-items: center; gap: 4px; height: 22px; padding-right: 10px; cursor: pointer; white-space: nowrap; user-select: none; }
   .node:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
@@ -436,8 +439,7 @@
   <div id="resizer" title="Arrastra para cambiar el ancho"></div>
   <aside id="panel">
     <div class="tabs" role="tablist">
-      <button type="button" role="tab" id="tabTree" class="tab active needs-project">Worktree <span id="treeCount" class="count"></span></button>
-      <button type="button" role="tab" id="tabFile" class="tab needs-project">Archivo <span id="fileTabName" class="count"></span></button>
+      <button type="button" role="tab" id="tabTree" class="tab active needs-project">Archivos <span id="treeCount" class="count"></span><span id="fileTabName" class="count"></span></button>
       <button type="button" role="tab" id="tabCouncil" class="tab needs-project">Consejo <span id="councilTabState" class="count"></span></button>
       <button type="button" role="tab" id="tabBoard" class="tab needs-project">Pizarra</button>
       <button type="button" role="tab" id="tabUsage" class="tab">Uso</button>
@@ -464,7 +466,8 @@
       </div>
       <div id="usageList" class="usage-list"></div>
     </div>
-    <div id="treeView" class="view">
+    <div id="filesView" class="view files-split">
+      <div id="treeView" class="files-tree">
       <div class="toolbar explorer-head">
         <span id="explorerTitle" class="section-title"></span>
         <span id="branch" class="muted"></span>
@@ -475,8 +478,8 @@
         </span>
       </div>
       <div id="tree"></div>
-    </div>
-    <div id="fileView" class="view" hidden>
+      </div>
+      <div id="fileView" class="files-editor">
       <div class="toolbar">
         <span id="filePath" class="path-label"></span>
         <span id="fileStats" class="stats"></span>
@@ -492,8 +495,9 @@
         <div id="editor"></div>
         <div id="diffEditor" hidden></div>
         <iframe id="htmlPreview" sandbox="allow-scripts" title="Vista previa" hidden></iframe>
-        <p id="fileNotice" class="muted pad">Aquí verás el archivo que se está editando. También puedes abrir uno desde Worktree.</p>
+        <p id="fileNotice" class="muted pad">Aquí verás el archivo que se está editando. También puedes abrir uno desde el árbol.</p>
       </div>
+    </div>
     </div>
     <div id="councilView" class="view" hidden>
       <div class="toolbar">
@@ -1363,12 +1367,10 @@
   const togglePressed = (id) => $(id).setAttribute('aria-pressed', String(!pressed(id)));
 
   function setTab(name) {
-    $('tabTree').classList.toggle('active', name === 'tree');
-    $('tabFile').classList.toggle('active', name === 'file');
+    $('tabTree').classList.toggle('active', name === 'tree' || name === 'file');
     $('tabCouncil').classList.toggle('active', name === 'council');
     $('tabUsage').classList.toggle('active', name === 'usage');
-    $('treeView').hidden = name !== 'tree';
-    $('fileView').hidden = name !== 'file';
+    $('filesView').hidden = !(name === 'tree' || name === 'file');
     $('councilView').hidden = name !== 'council';
     $('usageView').hidden = name !== 'usage';
     $('tabAgents').classList.toggle('active', name === 'agents');
@@ -1381,7 +1383,6 @@
     if (!['council', 'agents', 'board'].includes(name) && document.body.classList.contains('council-wide')) toggleWide(false);
   }
   $('tabTree').addEventListener('click', () => setTab('tree'));
-  $('tabFile').addEventListener('click', () => setTab('file'));
 
   // Mostrar/ocultar y ancho del panel (se recuerdan)
   const applyPanel = () => {
