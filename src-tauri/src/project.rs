@@ -262,11 +262,14 @@ pub fn diagram_get(project: &Path, id: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&fs::read_to_string(diagrams_dir(project).join(format!("{id}.json"))).ok()?).ok()
 }
 
-/// Texto de un diagrama o de la pizarra libre para que lo lean los agentes: título, código original y pizarra actual.
-pub fn board_text(project: &Path, which: &str) -> Result<String, String> {
+/// Id del diagrama al que se refiere `which` (id exacto o parte del título), o "proyecto" para la pizarra libre.
+pub fn diagram_resolve(project: &Path, which: &str) -> Result<String, String> {
     if which == "proyecto" {
-        let board = board_get(project).ok_or("El proyecto no tiene pizarra libre todavía")?;
-        return Ok(format!("# Pizarra libre del proyecto\n\n{}", crate::escena::describir(&board)));
+        return if board_get(project).is_some() {
+            Ok("proyecto".into())
+        } else {
+            Err("El proyecto no tiene pizarra libre todavía".into())
+        };
     }
     let list = diagrams_list(project);
     let mut cands: Vec<&Diagram> = Vec::new();
@@ -282,7 +285,16 @@ pub fn board_text(project: &Path, which: &str) -> Result<String, String> {
             cands.iter().map(|d| format!("{} · {}", d.id, d.title)).collect::<Vec<_>>().join("\n")
         ));
     }
-    let id = cands.first().ok_or_else(|| format!("No hay ningún diagrama «{which}». Usa agentes pizarra --listar"))?.id.clone();
+    cands.first().map(|d| d.id.clone()).ok_or_else(|| format!("No hay ningún diagrama «{which}». Usa agentes pizarra --listar"))
+}
+
+/// Texto de un diagrama o de la pizarra libre para que lo lean los agentes: título, código original y pizarra actual.
+pub fn board_text(project: &Path, which: &str) -> Result<String, String> {
+    let id = diagram_resolve(project, which)?;
+    if id == "proyecto" {
+        let board = board_get(project).ok_or("El proyecto no tiene pizarra libre todavía")?;
+        return Ok(format!("# Pizarra libre del proyecto\n\n{}", crate::escena::describir(&board)));
+    }
     let d = diagram_get(project, &id).ok_or("Diagrama no encontrado")?;
     let desc = if d.get("elements").is_some() {
         crate::escena::describir(&d)
