@@ -178,3 +178,100 @@ pub fn board_save(project: &Path, board: &serde_json::Value) -> Result<(), Strin
     fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
     write_atomic(&file, &json)
 }
+
+// ---------- Diagramas: una pizarra por diagrama (docs/plan-pizarra-agentes.md) ----------
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagram {
+    pub id: String,
+    pub title: String,
+    pub format: String,
+    pub created_at: String,
+}
+
+fn diagrams_dir(project: &Path) -> PathBuf {
+    let hash = sha1_smol::Sha1::from(project.to_string_lossy().as_bytes()).digest().to_string();
+    data_dir().join("boards").join(hash)
+}
+
+fn valid_diagram_id(id: &str) -> bool {
+    id.len() == 16 && id.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Crea la pizarra de un diagrama (o devuelve la que ya había con el mismo código). Los elementos
+/// los pone la interfaz al convertir el código la primera vez que lo abre.
+pub fn diagram_create(project: &Path, title: &str, format: &str, source: &str) -> Result<Diagram, String> {
+    if !matches!(format, "mermaid" | "excalidraw") {
+        return Err(format!("Formato no válido: «{format}» (mermaid o excalidraw)"));
+    }
+    if source.trim().is_empty() || source.len() > 200_000 {
+        return Err("El diagrama está vacío o es demasiado grande".into());
+    }
+    let id = sha1_smol::Sha1::from(format!("{format}\n{}", source.trim())).digest().to_string()[..16].to_string();
+    let dir = diagrams_dir(project);
+    let file = dir.join(format!("{id}.json"));
+    if let Some(v) = fs::read_to_string(&file).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+        return Ok(Diagram {
+            id,
+            title: v["title"].as_str().unwrap_or_default().into(),
+            format: format.into(),
+            created_at: v["createdAt"].as_str().unwrap_or_default().into(),
+        });
+    }
+    let title: String = title.trim().chars().take(120).collect();
+    let title = if title.is_empty() { "Diagrama".to_string() } else { title };
+    let d = Diagram { id: id.clone(), title, format: format.into(), created_at: chrono::Utc::now().to_rfc3339() };
+    let v = serde_json::json!({ "id": d.id, "title": d.title, "format": d.format, "createdAt": d.created_at, "source": source });
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    write_atomic(&file, &v.to_string())?;
+    Ok(d)
+}
+
+pub fn diagrams_list(project: &Path) -> Vec<Diagram> {
+    let mut out: Vec<Diagram> = fs::read_dir(diagrams_dir(project))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(e.path()).ok()?).ok()?;
+            Some(Diagram {
+                id: v["id"].as_str()?.into(),
+                title: v["title"].as_str().unwrap_or("Diagrama").into(),
+                format: v["format"].as_str().unwrap_or("mermaid").into(),
+                created_at: v["createdAt"].as_str().unwrap_or_default().into(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    out
+}
+
+pub fn diagram_get(project: &Path, id: &str) -> Option<serde_json::Value> {
+    if !valid_diagram_id(id) {
+        return None;
+    }
+    serde_json::from_str(&fs::read_to_string(diagrams_dir(project).join(format!("{id}.json"))).ok()?).ok()
+}
+
+/// Guarda lo dibujado (elements, appState, files) conservando título y código fuente.
+pub fn diagram_save(project: &Path, id: &str, board: &serde_json::Value) -> Result<(), String> {
+    let mut v = diagram_get(project, id).ok_or("Diagrama no encontrado")?;
+    for k in ["elements", "appState", "files"] {
+        if let Some(x) = board.get(k) {
+            v[k] = x.clone();
+        }
+    }
+    let json = v.to_string();
+    if json.len() > 10_000_000 {
+        return Err("La pizarra es demasiado grande".into());
+    }
+    write_atomic(&diagrams_dir(project).join(format!("{id}.json")), &json)
+}
+
+pub fn diagram_delete(project: &Path, id: &str) -> Result<(), String> {
+    if !valid_diagram_id(id) {
+        return Err("Diagrama no válido".into());
+    }
+    fs::remove_file(diagrams_dir(project).join(format!("{id}.json"))).map_err(|e| e.to_string())
+}
