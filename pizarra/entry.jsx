@@ -10,6 +10,28 @@ import "@excalidraw/excalidraw/index.css";
 // Mermaid → Excalidraw (diagramas que dibujan los agentes desde el chat).
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 
+// Pone las imágenes SVG (diagramas Mermaid que no se pasan a formas) a su tamaño real, el de su viewBox.
+function fitSvgImages(elements, files) {
+  let changed = false;
+  const out = elements.map((e) => {
+    if (e.type !== "image" || !e.fileId || !files || !files[e.fileId]) return e;
+    const url = files[e.fileId].dataURL || "";
+    if (!url.startsWith("data:image/svg+xml")) return e;
+    let svg;
+    try {
+      const data = url.slice(url.indexOf(",") + 1);
+      svg = url.includes(";base64,") ? atob(data) : decodeURIComponent(data);
+    } catch (err) { return e; }
+    const m = svg.match(/viewBox="\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"/);
+    if (!m) return e;
+    const w = parseFloat(m[1]), h = parseFloat(m[2]);
+    if (!(w > 0 && h > 0) || Math.abs(e.width - w) < 1) return e;
+    changed = true;
+    return { ...e, width: w, height: h };
+  });
+  return { elements: out, changed };
+}
+
 // Pizarra: fachada única para montar la vista del tablero del consejo.
 window.Pizarra = {
   // convert convierte esqueletos en elementos de Excalidraw, conservando sus ids (regenerateIds: false).
@@ -21,7 +43,13 @@ window.Pizarra = {
     // El conversor deja «<br/>» como texto literal en las etiquetas: se cambia por un espacio.
     code = String(code).replace(/<br\s*\/?>/gi, " ");
     const { elements, files } = await parseMermaidToExcalidraw(code, { themeVariables: { fontSize: "16px" } });
-    return { elements: convertToExcalidrawElements(elements), files: files || {} };
+    // Los diagramas no convertibles a formas vuelven como imagen SVG al ancho del contenedor: se ajustan a su tamaño real.
+    const fit = fitSvgImages(convertToExcalidrawElements(elements), files || {});
+    return { elements: fit.elements, files: files || {} };
+  },
+  // fitSvgImages pone las imágenes SVG (diagramas Mermaid que no se pasan a formas) a su tamaño real, el de su viewBox.
+  fitSvgImages(elements, files) {
+    return fitSvgImages(elements, files);
   },
   // fontsReady espera a que Excalidraw registre Excalifont en document.fonts (lo hace al montarse, no al cargar el bundle): sin ella convert mide el texto con una reserva y las tarjetas se cortan.
   async fontsReady() {
