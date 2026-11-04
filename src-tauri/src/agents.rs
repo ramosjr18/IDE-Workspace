@@ -259,6 +259,8 @@ pub fn build_prompt(agent: &Agent, messages: &[Message], message: &str) -> Strin
 pub struct RunResult {
     pub text: String,
     pub steps: Vec<Step>,
+    /// Uso que informó la CLI durante la ejecución (tokens, coste, peticiones).
+    pub usage: crate::stream::Usage,
 }
 
 /// Ejecuta el agente con el prompt en la carpeta `cwd`. Cada paso (comando, archivo editado,
@@ -346,9 +348,10 @@ async fn run_with(
     let status = child.wait().await.map_err(|e| e.to_string())?;
     let err = strip_ansi(&err_task.await.unwrap_or_default());
     let text = parser.final_text();
+    let usage = parser.usage();
     let steps = parser.finish();
     if status.success() {
-        return Ok(RunResult { text, steps });
+        return Ok(RunResult { text, steps, usage });
     }
     let detail = if err.trim().is_empty() {
         steps.iter().rev().find(|s| s.kind == "error" || s.kind == "text").map(|s| s.detail.clone()).unwrap_or_default()
