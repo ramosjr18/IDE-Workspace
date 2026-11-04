@@ -631,6 +631,8 @@ pub fn run() {
                 let _ = app.state::<workspace::Watcher>().watch(app.handle().clone(), dir);
             }
             panes::start_server(app.handle().clone());
+            #[cfg(debug_assertions)]
+            workspace::reload_on_ui_change(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
