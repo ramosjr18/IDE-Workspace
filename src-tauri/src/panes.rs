@@ -660,6 +660,9 @@ Uso:
   agentes kill <id>         detiene el panel
   agentes pizarra [--title <título>] [--format mermaid|excalidraw] [archivo|-]
                             muestra un diagrama en la pizarra del usuario (su propia pizarra)
+  agentes pizarra --listar  diagramas de la pizarra de este proyecto (id, título)
+  agentes pizarra --leer <id|título|proyecto>
+                            código original y pizarra actual en texto, con los cambios del usuario
 
 --worktree crea (o reutiliza) .claude/worktrees/<nombre> en una rama nueva desde HEAD
 (agentes/<nombre> si no se indica --branch) y ejecuta la CLI ahí.
@@ -846,6 +849,34 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
             Ok(0)
         }
         "pizarra" => {
+            let first = it.next();
+            match first.as_deref() {
+                Some("--listar") => {
+                    // Lee los archivos directamente: funciona aunque la app esté cerrada.
+                    let root = repo_root(Path::new(&cwd));
+                    println!("id\ttítulo\tformato\tcreado");
+                    let board = crate::project::board_get(&root).is_some();
+                    if board {
+                        println!("proyecto\tPizarra libre del proyecto\t-\t-");
+                    }
+                    let list = crate::project::diagrams_list(&root);
+                    for d in &list {
+                        println!("{}\t{}\t{}\t{}", d.id, d.title, d.format, d.created_at);
+                    }
+                    if !board && list.is_empty() {
+                        println!("No hay diagramas en la pizarra de este proyecto.");
+                    }
+                    return Ok(0);
+                }
+                Some("--leer") => {
+                    let arg: String = it.next().ok_or("Uso: agentes pizarra --leer <id|título|proyecto>")?;
+                    println!("{}", crate::project::board_text(&repo_root(Path::new(&cwd)), &arg)?);
+                    return Ok(0);
+                }
+                _ => {}
+            }
+            // El primer argumento no era --listar/--leer: lo devolvemos para el bucle de abajo.
+            let mut it = first.into_iter().chain(it);
             let mut title = String::new();
             let mut format = "mermaid".to_string();
             let mut file: Option<String> = None;
