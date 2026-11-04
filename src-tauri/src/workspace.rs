@@ -282,3 +282,28 @@ impl Watcher {
         Ok(())
     }
 }
+
+/// Solo en desarrollo (`npm run dev`): recarga la ventana al cambiar algo en `ui/` (sin `ui/vendor`).
+/// `tauri dev` sirve `ui/` como archivos estáticos y no recarga solo.
+#[cfg(debug_assertions)]
+pub fn reload_on_ui_change(app: AppHandle) {
+    use tauri::Manager;
+    let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("ui");
+    let Ok(ui) = ui.canonicalize() else { return };
+    let vendor = ui.join("vendor");
+    let handle = app.clone();
+    let debouncer = new_debouncer(Duration::from_millis(250), move |res: DebounceEventResult| {
+        let Ok(events) = res else { return };
+        if events.iter().any(|e| !e.path.starts_with(&vendor)) {
+            for w in handle.webview_windows().values() {
+                let _ = w.eval("location.reload()");
+            }
+        }
+    });
+    if let Ok(mut d) = debouncer {
+        if d.watcher().watch(&ui, RecursiveMode::Recursive).is_ok() {
+            // Vive mientras viva la app.
+            std::mem::forget(d);
+        }
+    }
+}
