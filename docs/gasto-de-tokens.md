@@ -3,8 +3,10 @@
 Pregunta (02/11/2026): «¿Mi IDE hace que de alguna manera se gasten más tokens
 que de costumbre en cualquier CLI?»
 
-**Respuesta corta: sí.** Es por diseño, no por un fallo: cada mensaje arranca
-la CLI de cero y le reenvía la conversación como texto.
+**Respuesta corta: sí, hasta el 04/11/2026.** Era por diseño, no por un fallo:
+cada mensaje arrancaba la CLI de cero y le reenviaba la conversación como texto.
+Ya no: el chat reanuda la sesión de cada CLI (ver el final). Lo de abajo explica
+por qué gastaba más.
 
 ## Por qué gasta más
 
@@ -73,5 +75,6 @@ id de sesión de cada CLI y reanudarla:
 - Las sesiones caducan o se borran en la CLI. Si reanudar falla, se vuelve al
   modo de ahora.
 
-Estado: **propuesta, sin decidir.** Es un cambio de diseño en `agents.rs` y
-`store.rs`.
+Estado: **implementado el 04/11/2026**, con el diseño y las cifras en
+`docs/plan-reanudar-sesiones.md`. En Claude, cada mensaje de seguimiento pasa
+de unos 0,18 $ a unos 0,009 $, y el agente recuerda lo que ya había leído.

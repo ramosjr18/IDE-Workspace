@@ -47,6 +47,32 @@ pub struct Agent {
     pub install_win: &'static str,
     pub login: &'static str,
     pub status: StatusCheck,
+    /// Cómo reanuda su sesión (docs/plan-reanudar-sesiones.md §2).
+    pub session: SessionMode,
+}
+
+/// Cómo guarda y reanuda su sesión cada CLI. Comprobado el 04/11/2026.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SessionMode {
+    /// No se reanuda: cada mensaje lleva el historial como texto (Gemini, sin probar).
+    None,
+    /// La app elige el id: `--session-id <uuid>` al crearla y `--resume <id>` al seguir (Claude, Copilot).
+    Own,
+    /// La CLI dice el id en su salida y se sigue con `<opción> <id>` (OpenCode `-s`, agy `--conversation`).
+    Flag(&'static str),
+    /// Codex: `exec [opciones] resume <id> -`; el id sale en `thread.started`.
+    Codex,
+}
+
+/// Sesión de una ejecución.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Session {
+    /// Sin sesión que guardar (consejo, pruebas).
+    None,
+    /// Sesión nueva, para reanudarla en el siguiente mensaje.
+    New,
+    /// Seguir esta sesión.
+    Resume(String),
 }
 
 pub const AGENTS: &[Agent] = &[
@@ -63,6 +89,7 @@ pub const AGENTS: &[Agent] = &[
         install_win: "irm https://claude.ai/install.ps1 | iex",
         login: "claude auth login",
         status: StatusCheck::ClaudeAuth,
+        session: SessionMode::Own,
     },
     Agent {
         id: "codex",
@@ -77,6 +104,7 @@ pub const AGENTS: &[Agent] = &[
         install_win: "npm install -g @openai/codex",
         login: "codex login",
         status: StatusCheck::CodexLogin,
+        session: SessionMode::Codex,
     },
     Agent {
         id: "opencode",
@@ -91,6 +119,7 @@ pub const AGENTS: &[Agent] = &[
         install_win: "npm install -g opencode-ai",
         login: "opencode auth login",
         status: StatusCheck::AlwaysReady,
+        session: SessionMode::Flag("-s"),
     },
     Agent {
         id: "agy",
@@ -105,6 +134,7 @@ pub const AGENTS: &[Agent] = &[
         install_win: "irm https://antigravity.google/cli/install.ps1 | iex",
         login: "agy",
         status: StatusCheck::AgyModels,
+        session: SessionMode::Flag("--conversation"),
     },
     Agent {
         id: "gemini",
@@ -119,6 +149,7 @@ pub const AGENTS: &[Agent] = &[
         install_win: "npm install -g @google/gemini-cli",
         login: "gemini",
         status: StatusCheck::GeminiCreds,
+        session: SessionMode::None,
     },
     Agent {
         id: "copilot",
@@ -133,6 +164,7 @@ pub const AGENTS: &[Agent] = &[
         install_win: "npm install -g @github/copilot",
         login: "copilot login",
         status: StatusCheck::CopilotAuth,
+        session: SessionMode::Own,
     },
 ];
 
@@ -222,8 +254,36 @@ pub async fn status(agent: &Agent) -> &'static str {
     if ready { "ready" } else { "login" }
 }
 
+/// Una línea del historial: «[Quién]: texto», con el resumen de pasos si los hubo.
+fn history_line(m: &Message) -> String {
+    let who = if m.role == "user" { "Usuario" } else { m.agent_name.as_deref().or(m.agent.as_deref()).unwrap_or("Asistente") };
+    let mut text = m.text.clone();
+    if let Some(sum) = m.steps.as_deref().and_then(stream::summary) {
+        text = format!("{sum}\n{text}");
+    }
+    format!("[{who}]: {text}")
+}
+
+/// Las líneas más recientes que caben en `budget` caracteres, en orden.
+fn recent_lines(messages: &[Message], budget: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut total = 0;
+    for m in messages.iter().rev() {
+        let line = history_line(m);
+        let len = line.chars().count();
+        if total + len > budget {
+            break;
+        }
+        total += len;
+        lines.push(line);
+    }
+    lines.reverse();
+    lines
+}
+
 /// Convierte la conversación guardada en el prompt para el agente elegido. Cada respuesta
 /// lleva el nombre del agente que la escribió, para que el siguiente sepa quién dijo qué.
+/// Es el prompt de una sesión nueva: con el historial entero (lo que quepa).
 pub fn build_prompt(agent: &Agent, messages: &[Message], message: &str) -> String {
     let header = format!(
         "Estás en un chat compartido por varios asistentes de IA. El usuario puede cambiar de asistente en cualquier momento, así que algunas respuestas anteriores pueden ser de otro asistente: cada una lleva su nombre. Tú eres {}. Continúa la conversación con naturalidad.\n\n--- Conversación hasta ahora ---\n",
@@ -232,26 +292,23 @@ pub fn build_prompt(agent: &Agent, messages: &[Message], message: &str) -> Strin
     let footer = "\n--- Fin de la conversación ---\n\nNuevo mensaje del usuario:\n";
     // Presupuesto para el historial: deja sitio para el mensaje nuevo y la cabecera.
     let budget = agent.max_context.saturating_sub(message.chars().count() + header.chars().count() + footer.chars().count());
-    let mut lines: Vec<String> = Vec::new();
-    let mut total = 0;
-    for m in messages.iter().rev() {
-        let who = if m.role == "user" { "Usuario" } else { m.agent_name.as_deref().or(m.agent.as_deref()).unwrap_or("Asistente") };
-        let mut text = m.text.clone();
-        if let Some(sum) = m.steps.as_deref().and_then(stream::summary) {
-            text = format!("{sum}\n{text}");
-        }
-        let line = format!("[{who}]: {text}");
-        let len = line.chars().count();
-        if total + len > budget {
-            break;
-        }
-        total += len;
-        lines.push(line);
-    }
+    let lines = recent_lines(messages, budget);
     if lines.is_empty() {
         return message.to_string();
     }
-    lines.reverse();
+    format!("{header}{}{footer}{}", lines.join("\n\n"), message)
+}
+
+/// Prompt de una sesión reanudada: solo lo que esta sesión no vio (lo que se habló con otros
+/// asistentes desde su último turno) y el mensaje nuevo. Sin nada pendiente, el mensaje tal cual.
+pub fn build_resume_prompt(agent: &Agent, unseen: &[Message], message: &str) -> String {
+    let header = "Mientras no estabas, el usuario siguió la conversación con otros asistentes (cada respuesta lleva su nombre):\n\n--- Lo que te perdiste ---\n";
+    let footer = "\n--- Fin ---\n\nNuevo mensaje del usuario:\n";
+    let budget = agent.max_context.saturating_sub(message.chars().count() + header.chars().count() + footer.chars().count());
+    let lines = recent_lines(unseen, budget);
+    if lines.is_empty() {
+        return message.to_string();
+    }
     format!("{header}{}{footer}{}", lines.join("\n\n"), message)
 }
 
@@ -261,8 +318,11 @@ pub struct RunResult {
     pub steps: Vec<Step>,
     /// Uso que informó la CLI durante la ejecución (tokens, coste, peticiones).
     pub usage: crate::stream::Usage,
+    /// Sesión de la CLI en la que quedó esta respuesta, para reanudarla.
+    pub session_id: Option<String>,
 }
 
+#[cfg(test)]
 /// Ejecuta el agente con el prompt en la carpeta `cwd`. Cada paso (comando, archivo editado,
 /// texto…) se pasa a `on_step` en cuanto ocurre. Si llega `cancel`, se detiene el proceso.
 pub async fn run(
@@ -272,7 +332,71 @@ pub async fn run(
     on_step: impl FnMut(&Step),
     cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<RunResult, String> {
-    run_with(agent, agent.args, prompt, cwd, on_step, cancel).await
+    run_with(agent, agent.args, &Session::None, prompt, cwd, on_step, cancel).await
+}
+
+/// Como `run`, creando o reanudando la sesión de la CLI.
+pub async fn run_session(
+    agent: &Agent,
+    session: &Session,
+    prompt: &str,
+    cwd: &Path,
+    on_step: impl FnMut(&Step),
+    cancel: tokio::sync::oneshot::Receiver<()>,
+) -> Result<RunResult, String> {
+    run_with(agent, agent.args, session, prompt, cwd, on_step, cancel).await
+}
+
+/// Argumentos de la CLI para esa sesión. `own_id`: el id que pone la app en una sesión nueva (modo `Own`).
+fn session_args(agent: &Agent, base: &[&str], session: &Session, own_id: &str) -> Vec<String> {
+    let mut args: Vec<String> = base.iter().map(|a| a.to_string()).collect();
+    match (agent.session, session) {
+        (SessionMode::None, _) | (_, Session::None) => {}
+        (SessionMode::Own, Session::New) => args.extend(["--session-id".into(), own_id.into()]),
+        (SessionMode::Own, Session::Resume(id)) => args.extend(["--resume".into(), id.clone()]),
+        (SessionMode::Flag(flag), Session::Resume(id)) => args.extend([flag.into(), id.clone()]),
+        (SessionMode::Codex, Session::Resume(id)) => {
+            // `exec … -` → `exec … resume <id> -` (las opciones van antes de `resume`).
+            if args.last().map(String::as_str) == Some("-") {
+                args.pop();
+            }
+            args.extend(["resume".into(), id.clone(), "-".into()]);
+        }
+        (SessionMode::Flag(_) | SessionMode::Codex, Session::New) => {}
+    }
+    args
+}
+
+/// La CLI no encontró la sesión que se le pidió reanudar (borrada o de otra carpeta). Textos reales.
+pub fn session_lost(agent: &Agent, error: &str) -> bool {
+    let e = error.to_lowercase();
+    let marks: &[&str] = match agent.id {
+        // «No conversation found with session ID: …»
+        "claude" => &["no conversation found with session id"],
+        // «thread/resume failed: no rollout found for thread id …»
+        "codex" => &["no rollout found for thread id", "thread/resume failed"],
+        // «Error: No session, task, or name matched '…'.»
+        "copilot" => &["no session, task, or name matched"],
+        _ => &[],
+    };
+    marks.iter().any(|m| e.contains(m))
+}
+
+/// OpenCode crea una sesión vacía si `-s` apunta a una que no existe, sin avisar: se comprueba antes.
+pub async fn opencode_has_session(id: &str, cwd: &Path) -> bool {
+    let Some(file) = which("opencode") else { return false };
+    let mut cmd = command(&file);
+    cmd.args(["session", "list", "--format", "json", "-n", "100000"])
+        .current_dir(cwd)
+        .env("PWD", cwd)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    match tokio::time::timeout(Duration::from_secs(20), cmd.output()).await {
+        Ok(Ok(out)) => serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout)
+            .map(|l| l.iter().any(|s| s["id"] == id))
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 /// Igual que `run`, pero en modo solo lectura (para el consejo).
@@ -283,12 +407,13 @@ pub async fn run_readonly(
     on_step: impl FnMut(&Step),
     cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<RunResult, String> {
-    run_with(agent, agent.readonly_args, prompt, cwd, on_step, cancel).await
+    run_with(agent, agent.readonly_args, &Session::None, prompt, cwd, on_step, cancel).await
 }
 
 async fn run_with(
     agent: &Agent,
     args: &[&str],
+    session: &Session,
     prompt: &str,
     cwd: &Path,
     mut on_step: impl FnMut(&Step),
@@ -300,7 +425,8 @@ async fn run_with(
         cmd.arg("-p").arg(prompt);
     }
     // Algunas CLIs (OpenCode) toman la carpeta de PWD y no de la carpeta del proceso.
-    cmd.args(args).current_dir(cwd).env("PWD", cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let own_id = uuid::Uuid::new_v4().to_string();
+    cmd.args(session_args(agent, args, session, &own_id)).current_dir(cwd).env("PWD", cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("No se pudo ejecutar {}: {e}", agent.cmd))?;
     let mut stdin = child.stdin.take().unwrap();
     let input = if agent.prompt_arg { String::new() } else { prompt.to_string() };
@@ -349,9 +475,16 @@ async fn run_with(
     let err = strip_ansi(&err_task.await.unwrap_or_default());
     let text = parser.final_text();
     let usage = parser.usage();
+    let session_id = match (agent.session, session) {
+        (SessionMode::None, _) | (_, Session::None) => None,
+        (SessionMode::Own, Session::New) => Some(own_id),
+        // Si la CLI no repite el id al reanudar, sigue siendo el mismo.
+        (_, Session::Resume(id)) => parser.session_id().or_else(|| Some(id.clone())),
+        _ => parser.session_id(),
+    };
     let steps = parser.finish();
     if status.success() {
-        return Ok(RunResult { text, steps, usage });
+        return Ok(RunResult { text, steps, usage, session_id });
     }
     let detail = if err.trim().is_empty() {
         steps.iter().rev().find(|s| s.kind == "error" || s.kind == "text").map(|s| s.detail.clone()).unwrap_or_default()
@@ -377,5 +510,60 @@ pub fn terminal_command(agent: &Agent, action: &str) -> (String, String, Vec<Str
         )
     } else {
         (command.into(), "bash".into(), vec!["-lc".into(), command.into()])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: &str, text: &str, name: Option<&str>) -> Message {
+        Message { role: role.into(), text: text.into(), agent: None, agent_name: name.map(str::to_string), ts: String::new(), steps: None }
+    }
+
+    #[test]
+    fn argumentos_de_sesion() {
+        let a = |id: &str, s: &Session| {
+            let ag = get(id).unwrap();
+            session_args(ag, ag.args, s, "UUID").join(" ")
+        };
+        let resume = |id: &str| Session::Resume(id.into());
+        assert!(a("claude", &Session::New).ends_with("--verbose --session-id UUID"));
+        assert!(a("claude", &resume("abc")).ends_with("--verbose --resume abc"));
+        assert_eq!(a("claude", &Session::None), get("claude").unwrap().args.join(" "));
+        assert_eq!(a("codex", &Session::New), "exec --approve-for-me --skip-git-repo-check --json -");
+        assert_eq!(a("codex", &resume("019a")), "exec --approve-for-me --skip-git-repo-check --json resume 019a -");
+        assert!(a("opencode", &resume("ses_x")).ends_with("--format json -s ses_x"));
+        assert!(!a("opencode", &Session::New).contains("-s"));
+        assert!(a("agy", &resume("c1")).ends_with("--conversation c1"));
+        assert!(a("copilot", &Session::New).ends_with("--session-id UUID"));
+        assert!(a("copilot", &resume("c2")).ends_with("--resume c2"));
+        // Gemini no reanuda (sin probar).
+        assert_eq!(a("gemini", &resume("x")), get("gemini").unwrap().args.join(" "));
+    }
+
+    #[test]
+    fn sesion_perdida() {
+        let lost = |id: &str, e: &str| session_lost(get(id).unwrap(), e);
+        // Textos reales del 04/11/2026.
+        assert!(lost("claude", "claude terminó con código 1\nNo conversation found with session ID: 740c0811-75f9-42fb-bdc8-11bde2193723"));
+        assert!(lost("codex", "Error: thread/resume: thread/resume failed: no rollout found for thread id 019a0000-0000-7000-8000-000000000000 (code -32600)"));
+        assert!(lost("copilot", "Error: No session, task, or name matched 'bacc8ace-8113-48d8-8e4e-b9b41dc38415'."));
+        assert!(!lost("claude", "You've hit your limit · resets 3am"));
+        assert!(!lost("codex", "error[E0599]: no method named `foo`"));
+    }
+
+    #[test]
+    fn prompt_al_reanudar() {
+        let claude = get("claude").unwrap();
+        // Nada nuevo de otros asistentes: el mensaje tal cual, como en la CLI.
+        assert_eq!(build_resume_prompt(claude, &[], "sigue"), "sigue");
+        // Solo lo que no vio.
+        let unseen = [msg("user", "revisa el login", None), msg("assistant", "hay un fallo en auth.rs", Some("Codex"))];
+        let p = build_resume_prompt(claude, &unseen, "arréglalo");
+        assert!(p.contains("[Usuario]: revisa el login"));
+        assert!(p.contains("[Codex]: hay un fallo en auth.rs"));
+        assert!(p.ends_with("arréglalo"));
+        assert!(!p.contains("Conversación hasta ahora"));
     }
 }

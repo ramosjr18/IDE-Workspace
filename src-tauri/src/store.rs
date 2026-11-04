@@ -2,6 +2,7 @@
 //! Cada conversación es un JSON en ~/.ide-workspace-chat/conversations (o en CHAT_DATA_DIR).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -32,6 +33,22 @@ pub struct Conversation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     pub messages: Vec<Message>,
+    /// Sesión de cada CLI en esta conversación, por cuenta: «claude», «codex:team-2»…
+    /// (docs/plan-reanudar-sesiones.md §3.1). Las conversaciones antiguas no la tienen.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sessions: BTreeMap<String, CliSession>,
+}
+
+/// Sesión de una CLI dentro de una conversación de la app.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CliSession {
+    pub id: String,
+    /// Mensajes de la conversación que esta sesión ya ha visto (índice del siguiente).
+    pub seen: usize,
+    /// Forma de trabajar con la que se le dieron instrucciones por última vez.
+    #[serde(default)]
+    pub workflow: String,
 }
 
 #[derive(Serialize)]
@@ -90,6 +107,7 @@ pub fn append(id: Option<&str>, project: &str, messages: Vec<Message>) -> Result
         updated_at: ts.clone(),
         project: Some(project.to_string()),
         messages: vec![],
+        sessions: BTreeMap::new(),
     });
     for mut m in messages {
         m.ts = ts.clone();
@@ -101,6 +119,23 @@ pub fn append(id: Option<&str>, project: &str, messages: Vec<Message>) -> Result
     conv.updated_at = ts;
     save(&conv)?;
     Ok(conv)
+}
+
+/// Guarda la sesión `key` de la conversación: ha visto todos los mensajes que hay ahora.
+pub fn set_session(id: &str, key: &str, session_id: String, workflow: String) -> Result<(), String> {
+    let mut conv = get(id).ok_or("Conversación no encontrada")?;
+    let seen = conv.messages.len();
+    conv.sessions.insert(key.to_string(), CliSession { id: session_id, seen, workflow });
+    save(&conv)
+}
+
+/// Olvida la sesión `key` (la CLI ya no la tiene).
+pub fn forget_session(id: &str, key: &str) -> Result<(), String> {
+    let Some(mut conv) = get(id) else { return Ok(()) };
+    if conv.sessions.remove(key).is_some() {
+        save(&conv)?;
+    }
+    Ok(())
 }
 
 fn project_of(c: &Conversation) -> String {
@@ -121,4 +156,18 @@ pub fn list(project: &str) -> Vec<Summary> {
         .unwrap_or_default();
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conversacion_antigua_sin_sesiones() {
+        let old = r#"{"id":"a","title":"t","createdAt":"x","updatedAt":"x","messages":[{"role":"user","text":"hola"}]}"#;
+        let c: Conversation = serde_json::from_str(old).unwrap();
+        assert!(c.sessions.is_empty());
+        // Sin sesiones no se escribe el campo: el JSON queda como antes.
+        assert!(!serde_json::to_string(&c).unwrap().contains("sessions"));
+    }
 }
