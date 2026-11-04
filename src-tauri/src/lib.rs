@@ -13,6 +13,7 @@ mod accounts;
 mod agents;
 mod council;
 mod env;
+mod own_agents;
 mod panes;
 mod project;
 mod roles;
