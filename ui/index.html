@@ -343,6 +343,9 @@
   <form id="councilForm" method="dialog">
     <div class="dlg-head"><h2>Nuevo consejo</h2><button type="button" data-close>Cancelar</button></div>
     <div class="council-form">
+      <label class="field">Plantilla <span class="muted">(rellena participantes, roles, moderador y resultado)</span>
+        <select id="cTemplate"></select>
+      </label>
       <label class="field">Tema
         <input id="cTopic" placeholder="Ej.: Política de versionado de la API" autocomplete="off">
       </label>
@@ -369,6 +372,10 @@
       <label class="field">Contexto <span class="muted">(la conversación actual; edítalo si quieres)</span>
         <textarea id="cContext" rows="7"></textarea>
       </label>
+      <div class="field">Guardar como plantilla <span class="muted">(con los participantes, roles, moderador y resultado de ahora)</span>
+        <div class="member-row"><input id="cTemplateName" placeholder="Nombre de la plantilla" autocomplete="off"><button type="button" id="cTemplateSave">Guardar</button></div>
+        <span class="muted" id="cTemplateMsg"></span>
+      </div>
       <p class="muted" id="cEstimate"></p>
       <p class="step-error" id="cError" hidden></p>
     </div>
@@ -1294,7 +1301,9 @@
 
   // ----- Convocar -----
   async function openCouncilDialog(topic) {
-    if (!councilRoles.length) councilRoles = await invoke('council_roles');
+    const cfg = await invoke('council_config_get');
+    councilRoles = cfg.roles;
+    rolesTemplates = cfg.templates;
     $('cTopic').value = topic;
     $('cError').hidden = true;
     $('cContext').value = await invoke('council_context', { conversationId });
@@ -1325,6 +1334,13 @@
     $('cJudge').onchange = updateEstimate;
     $('cJudgeRounds').onchange = updateEstimate;
     updateEstimate();
+    const ct = $('cTemplate');
+    ct.innerHTML = '';
+    ct.appendChild(el('option', { value: '', textContent: 'Sin plantilla' }));
+    rolesTemplates.forEach((t) => ct.appendChild(el('option', { value: t.id, textContent: t.name })));
+    ct.value = '';
+    $('cTemplateName').value = '';
+    $('cTemplateMsg').textContent = '';
     closeMenu();
     $('councilDialog').showModal();
     $('cTopic').focus();
@@ -1428,6 +1444,52 @@
       ? 'Elige al menos dos participantes.'
       : `Se harán ${base} llamadas (${n} para opinar, ${n} para contrastar, 1 de síntesis${judge ? ' y 1 del evaluador' : ''})${judge && extra ? `, y hasta ${max} si el evaluador pide ${extra === 1 ? 'una ronda más' : `${extra} rondas más`}` : ''}. Todos trabajan en modo solo lectura.`;
   }
+
+  // Rellena el diálogo con la plantilla t: resultado, participantes con sus roles y moderador.
+  function applyTemplate(t) {
+    $('cOutput').value = t.output;
+    const rows = [...$('cMembers').querySelectorAll('.member-row')];
+    const missing = [];
+    for (const m of t.members) {
+      const row = rows.find((r) => r.dataset.agent === m.agent);
+      if (!row || row.querySelector('input').disabled) { missing.push(m.agent); continue; }
+      row.querySelector('input').checked = true;
+      if (councilRoles.some((r) => r.id === m.role)) row.querySelector('select').value = m.role;
+    }
+    rows.forEach((row) => {
+      if (!t.members.some((m) => m.agent === row.dataset.agent)) row.querySelector('input').checked = false;
+    });
+    const mod = $('cModerator');
+    if ([...mod.options].some((o) => o.value === t.moderator)) mod.value = t.moderator;
+    const names = missing.map((id) => agents.find((a) => a.id === id)?.name || id);
+    $('cTemplateMsg').textContent = names.length ? `No disponibles ahora: ${names.join(', ')}` : '';
+    updateEstimate();
+  }
+
+  // Al elegir una plantilla, rellena el diálogo con sus participantes, roles, moderador y resultado.
+  $('cTemplate').addEventListener('change', () => {
+    const t = rolesTemplates.find((x) => x.id === $('cTemplate').value);
+    if (t) applyTemplate(t);
+  });
+
+  // Guarda los participantes, roles, moderador y resultado de ahora como plantilla nueva.
+  $('cTemplateSave').addEventListener('click', async () => {
+    const name = $('cTemplateName').value.trim();
+    if (!name) { $('cTemplateMsg').textContent = 'Escribe un nombre para la plantilla.'; return; }
+    const t = { id: slugRole(name, rolesTemplates.map((x) => x.id)), name,
+      output: $('cOutput').value, members: selectedMembers(), moderator: $('cModerator').value };
+    if (t.members.length < 2) { $('cTemplateMsg').textContent = 'Elige al menos dos participantes.'; return; }
+    try {
+      const saved = await invoke('council_config_save', { config: { roles: councilRoles, templates: [...rolesTemplates, t] } });
+      rolesTemplates = saved.templates;
+      $('cTemplate').appendChild(el('option', { value: t.id, textContent: t.name }));
+      $('cTemplate').value = t.id;
+      $('cTemplateName').value = '';
+      $('cTemplateMsg').textContent = `Plantilla «${name}» guardada.`;
+    } catch (err) {
+      $('cTemplateMsg').textContent = String(err);
+    }
+  });
 
   $('councilForm').addEventListener('submit', async (e) => {
     e.preventDefault();
