@@ -8,6 +8,7 @@
 <script src="vendor/xterm.js"></script>
 <script src="vendor/addon-fit.js"></script>
 <script src="vendor/monaco/vs/loader.js"></script>
+<script src="consejo-coste.js"></script>
 <style>
   :root {
     --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -103,6 +104,7 @@
   #councilSelect { flex: 1; min-width: 0; }
   .c-head { padding: 12px 14px 8px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
   .c-topic { font-weight: 700; font-size: 15px; }
+  .c-cost { font-size: 12px; color: var(--muted); }
   .c-phases { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .c-phase { font: 600 11px/1 ui-monospace, Menlo, monospace; padding: 5px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
   .c-phase.on { color: var(--me); border-color: var(--me); background: color-mix(in srgb, var(--me) 14%, transparent); }
@@ -115,6 +117,7 @@
   .c-col-head .name { font-weight: 700; font-size: 14px; display: flex; gap: 6px; align-items: center; }
   .c-col-head .role { font-size: 12px; color: var(--muted); }
   .c-col-head .act { font-size: 12px; color: var(--muted); display: flex; gap: 5px; align-items: center; min-height: 18px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .c-col-head .cost { font-size: 12px; color: var(--muted); }
   .c-col-head .act.err { color: var(--error); white-space: normal; }
   .c-card { border: 1px solid var(--border); border-left: 3px solid var(--c); border-radius: 8px; padding: 8px 10px; font-size: 13px; background: var(--bg); display: flex; flex-direction: column; gap: 4px; }
   .c-card.flash { outline: 2px solid var(--me); }
@@ -1417,6 +1420,8 @@
       return;
     }
     const c = council;
+    const stats = ConsejoCoste.councilStats(c);
+    const agentCost = (id) => { const a = stats.byAgent.find((x) => x.agent === id); return a ? ConsejoCoste.formatStats(a) : ''; };
     // Cabecera: tema, fases y acciones
     const phases = [
       ['diverge', 'Divergir'], ['contrast', `Contrastar${c.round ? ` · ronda ${c.round}` : ''}`], ['converge', 'Converger'],
@@ -1432,7 +1437,8 @@
       stop.addEventListener('click', () => invoke('council_cancel', { id: c.id }));
       chips.appendChild(stop);
     }
-    body.appendChild(el('div', { className: 'c-head' }, el('div', { className: 'c-topic', textContent: c.topic }), chips));
+    body.appendChild(el('div', { className: 'c-head' }, el('div', { className: 'c-topic', textContent: c.topic }), chips,
+      stats.total.calls > 0 ? el('div', { className: 'c-cost', textContent: 'Uso del consejo: ' + ConsejoCoste.formatStats(stats.total), title: stats.byAgent.map((a) => `${a.agentName}: ${ConsejoCoste.formatStats(a)}`).join('\n') }) : null));
     if (c.phase === 'error' || c.phase === 'cancelled') {
       body.appendChild(el('div', { className: 'c-banner', textContent: `${c.phase === 'cancelled' ? 'Detenido' : 'Error'}: ${c.error || ''}` }));
     }
@@ -1451,7 +1457,8 @@
       else if (m.status === 'error') act.textContent = m.activity || 'Error';
       else if (m.status === 'done') act.append(el('i', { className: 'codicon codicon-check' }), ' Listo');
       col.appendChild(el('div', { className: 'c-col-head' },
-        el('div', { className: 'name' }, el('span', { textContent: m.agentName })), el('div', { className: 'role', textContent: m.roleName }), act));
+        el('div', { className: 'name' }, el('span', { textContent: m.agentName })), el('div', { className: 'role', textContent: m.roleName }), act,
+        agentCost(m.agent) ? el('div', { className: 'cost', textContent: agentCost(m.agent) }) : null));
       topLevel(m.agent).forEach((k) => col.appendChild(cardEl(k, byTarget)));
       board.appendChild(col);
     }
@@ -1498,10 +1505,13 @@
   function synthesisColumn(c) {
     const col = el('div', { className: 'c-col c-synth' });
     const mod = agents.find((a) => a.id === c.moderator);
+    const stats = ConsejoCoste.councilStats(c);
+    const modCost = stats.byAgent.find((x) => x.agent === c.moderator);
     const act = el('div', { className: 'act' });
     if (c.phase === 'converge') act.append(el('i', { className: 'codicon codicon-loading codicon-modifier-spin' }), ` ${councilActivity.moderator || 'Redactando…'}`);
     col.appendChild(el('div', { className: 'c-col-head' },
-      el('div', { className: 'name', textContent: 'Síntesis' }), el('div', { className: 'role', textContent: `Moderador: ${mod ? mod.name : c.moderator}` }), act));
+      el('div', { className: 'name', textContent: 'Síntesis' }), el('div', { className: 'role', textContent: `Moderador: ${mod ? mod.name : c.moderator}` }), act,
+      modCost ? el('div', { className: 'cost', textContent: ConsejoCoste.formatStats(modCost) }) : null));
     const v = c.verdicts?.at(-1);
     if (v) col.appendChild(verdictEl(c, v));
     const s = c.synthesis;
