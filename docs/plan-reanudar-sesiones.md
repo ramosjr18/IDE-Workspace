@@ -1,6 +1,6 @@
 # Plan: reanudar la sesión de cada CLI en el chat
 
-Estado: **decidido el 04/11/2026** (§6). Implementa Claude.
+Estado: **implementado el 04/11/2026** (decisiones en §6, resultados en §8).
 
 ## Lo que se pidió
 
@@ -156,3 +156,33 @@ worktrees». Dentro de una sesión, el agente ya las tiene:
 - Tests: `build_prompt` en sus dos modos, el cálculo de `seen`, la
   serialización de las conversaciones viejas, y que cada CLI construye bien
   sus argumentos de sesión.
+
+## 8. Resultados (04/11/2026)
+
+**Claude, medido en `~/workspace/pablo`.** El coste es el que da la propia
+CLI (`total_cost_usd`). Al reanudar, esa cifra es el acumulado de la sesión,
+así que el de cada mensaje sale de la diferencia.
+
+| Mensaje | Reanudando | Como antes (sesión nueva + historial) |
+|---|---|---|
+| 1.º («lee README.md») | 0,20 $ | 0,20 $ |
+| 2.º | **0,009 $** (37.000 tokens leídos de caché, 101 nuevos) | 0,18 $ (otra vez unos 24.000 tokens nuevos en caché) |
+| 3.º | **0,009 $** | ~0,18 $ |
+
+- Cada mensaje de seguimiento cuesta **unas 20 veces menos**.
+- Al reanudar, Claude dio el título exacto del README sin volver a abrirlo.
+  Como antes, contestó «no lo sé, solo tengo el resumen»: para saberlo
+  habría tenido que volver a leer el archivo, y eso cuesta más.
+
+**Qué se ha comprobado de cada CLI:**
+
+| CLI | Estado |
+|---|---|
+| Claude | Probado de punta a punta: sesión propia, reanudar, sesión perdida |
+| Copilot | Probado: `--session-id`, `--resume`, sesión perdida |
+| agy | Probado: reanuda con `--conversation`. Si no la encuentra, abre otra sin avisar; la app lo detecta porque cambia el id, y repite el mensaje con sesión nueva |
+| Codex | Probados el id de `thread.started` y el error de sesión perdida. El reanudar no se ha podido probar: sin cuota hasta el 05/11 |
+| OpenCode | Probado el id `ses_…`. Si la sesión no existe, `-s` crea una vacía sin avisar, así que la app la busca antes con `opencode session list`. El reanudar no se ha podido probar: sin cuota de Go ni de modelos gratis |
+| Gemini | Sigue como antes: no hay sesión iniciada en esta máquina para probarlo |
+
+Pendiente: probar Codex y OpenCode cuando vuelva su cuota.

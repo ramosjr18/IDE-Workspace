@@ -198,8 +198,11 @@ async fn chat(
     if !cwd.is_dir() {
         return Err(format!("La carpeta del proyecto ya no existe: {}", cwd.display()));
     }
-    let previous = conversation_id.as_deref().and_then(store::get).map(|c| c.messages).unwrap_or_default();
+    let (previous, sessions) =
+        conversation_id.as_deref().and_then(store::get).map(|c| (c.messages, c.sessions)).unwrap_or_default();
     let key = conversation_id.clone().unwrap_or_default();
+    let flow = workflow.as_deref().and_then(workflows::get);
+    let flow_id = flow.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| "directo".into());
     if !key.is_empty() && !busy.0.lock().unwrap().insert(key.clone()) {
         return Err("Esta conversación ya está esperando una respuesta".into());
     }
@@ -214,6 +217,7 @@ async fn chat(
     let mut relays: Vec<String> = Vec::new();
     let mut used = ag;
     let mut outcome: Result<agents::RunResult, String> = Err("Sin cuentas disponibles".into());
+    let mut session_of: Option<(String, String)> = None;
     for _ in 0..8 {
         let next = match &fixed {
             Some(a) if tried.is_empty() => Some((ag, a.clone())),
@@ -226,17 +230,62 @@ async fn chat(
         // Ninguna por debajo del umbral: la principal de la CLI elegida (que dé su propio error si no puede).
         let Some((cand, acc)) = next.or_else(|| tried.is_empty().then(|| (ag, accounts::Account::principal(ag.id)))) else { break };
         tried.push(acc.id.clone());
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        running.0.lock().unwrap().insert(request_id.clone(), tx);
-        // Forma de trabajar y nota del lanzador: van en el prompt, no se guardan en la conversación.
-        let mut prompt = agents::build_prompt(cand, &previous, &message);
-        if let Some(w) = workflow.as_deref().and_then(workflows::get).filter(|w| !w.instructions.is_empty()) {
-            prompt = format!("{}\n\n{prompt}", w.instructions);
+        // Sesión de esta CLI y cuenta en la conversación: se reanuda si la CLI la sigue teniendo
+        // (docs/plan-reanudar-sesiones.md §3). Si no, sesión nueva con el historial como texto.
+        let mut resume = sessions.get(&acc.id).filter(|_| cand.session != agents::SessionMode::None).cloned();
+        if cand.session == agents::SessionMode::Flag("-s") {
+            if let Some(s) = &resume {
+                if !accounts::scope(acc.clone(), agents::opencode_has_session(&s.id, &cwd)).await {
+                    resume = None;
+                }
+            }
         }
-        if env::launcher_ready() {
-            prompt = format!("{}\n\n{prompt}", workflows::LAUNCHER_NOTE);
+        loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            running.0.lock().unwrap().insert(request_id.clone(), tx);
+            let (session, prompt) = match &resume {
+                Some(s) => {
+                    let unseen = &previous[s.seen.min(previous.len())..];
+                    let mut prompt = agents::build_resume_prompt(cand, unseen, &message);
+                    // La forma de trabajar ya la tiene la sesión; solo se repite si ha cambiado.
+                    if s.workflow != flow_id {
+                        let change = match flow.as_ref().filter(|w| !w.instructions.is_empty()) {
+                            Some(w) => format!("A partir de ahora, sigue esta forma de trabajar:\n\n{}", w.instructions),
+                            None => "A partir de ahora, deja la forma de trabajar anterior: responde y trabaja tú directamente.".into(),
+                        };
+                        prompt = format!("{change}\n\n{prompt}");
+                    }
+                    (agents::Session::Resume(s.id.clone()), prompt)
+                }
+                None => {
+                    // Forma de trabajar y nota del lanzador: van en el prompt, no se guardan en la conversación.
+                    let mut prompt = agents::build_prompt(cand, &previous, &message);
+                    if let Some(w) = flow.as_ref().filter(|w| !w.instructions.is_empty()) {
+                        prompt = format!("{}\n\n{prompt}", w.instructions);
+                    }
+                    if env::launcher_ready() {
+                        prompt = format!("{}\n\n{prompt}", workflows::LAUNCHER_NOTE);
+                    }
+                    (agents::Session::New, prompt)
+                }
+            };
+            outcome = accounts::scope(acc.clone(), agents::run_session(cand, &session, &prompt, &cwd, &on_step, rx)).await;
+            // La CLI ya no tiene la sesión: se repite una vez con sesión nueva. agy no falla: abre
+            // otra conversación y lo dice con un id distinto.
+            let lost = match (&resume, &outcome) {
+                (Some(_), Err(e)) => agents::session_lost(cand, e),
+                (Some(s), Ok(r)) if cand.id == "agy" => r.session_id.as_deref().is_some_and(|id| id != s.id),
+                _ => false,
+            };
+            if !lost {
+                break;
+            }
+            if let Some(id) = conversation_id.as_deref() {
+                let _ = store::forget_session(id, &acc.id);
+            }
+            resume = None;
         }
-        outcome = accounts::scope(acc.clone(), agents::run(cand, &prompt, &cwd, on_step, rx)).await;
+        session_of = outcome.as_ref().ok().and_then(|r| r.session_id.clone()).map(|id| (acc.id.clone(), id));
         used = cand;
         // El aviso de límite puede llegar como error o como respuesta corta (p. ej. Claude en stream-json).
         let failed_text = match &outcome {
@@ -278,6 +327,9 @@ async fn chat(
             },
         ],
     )?;
+    if let Some((acc_id, sid)) = session_of {
+        store::set_session(&conv.id, &acc_id, sid, flow_id)?;
+    }
     Ok(ChatReply { conversation_id: conv.id.clone(), title: conv.title.clone(), message: conv.messages.last().cloned().unwrap() })
 }
 
@@ -771,6 +823,14 @@ mod tests {
         assert_eq!(list_a.len(), 1);
         assert_eq!(list_a[0].id, a.id);
         assert_eq!(store::list("/proyecto/b")[0].title, "en B");
+        // Sesiones de CLI: `seen` = mensajes que había al guardarla.
+        store::set_session(&a.id, "claude", "S1".into(), "directo".into()).unwrap();
+        store::append(Some(&a.id), "/proyecto/a", vec![msg("user", "otra", None), msg("assistant", "vale", Some("Codex"))]).unwrap();
+        let c = store::get(&a.id).unwrap();
+        assert_eq!(c.sessions["claude"], store::CliSession { id: "S1".into(), seen: 1, workflow: "directo".into() });
+        assert_eq!(c.messages[c.sessions["claude"].seen..].len(), 2, "Claude no ha visto lo de Codex");
+        store::forget_session(&a.id, "claude").unwrap();
+        assert!(store::get(&a.id).unwrap().sessions.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -846,5 +906,34 @@ mod tests {
         let r2 = agents::run(claude, &agents::build_prompt(claude, &history, q), &dir, |s| println!("  paso: {s:?}"), never()).await.unwrap().text;
         println!("Claude: {r2}");
         assert!(r2.contains("42") && r2.contains("Codex"));
+    }
+
+    /// Claude en vivo: dos mensajes reanudando la sesión frente a dos sesiones nuevas con el historial.
+    /// `AGENTES_LIVE_DIR=~/workspace/pablo cargo test sesion_reanudada_en_vivo -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn sesion_reanudada_en_vivo() {
+        let dir = std::path::PathBuf::from(std::env::var("AGENTES_LIVE_DIR").expect("define AGENTES_LIVE_DIR"));
+        let claude = agents::get("claude").unwrap();
+        let never = || tokio::sync::oneshot::channel::<()>().1;
+        let first = "Lee README.md y dime en una frase de qué trata.";
+        let second = "¿Cuál era el título exacto (la primera línea) de ese archivo? No lo vuelvas a abrir.";
+        let reads = |r: &agents::RunResult| r.steps.iter().filter(|s| s.kind != "text").count();
+
+        // Reanudando
+        let r1 = agents::run_session(claude, &agents::Session::New, first, &dir, |_| {}, never()).await.unwrap();
+        let sid = r1.session_id.clone().expect("id de sesión");
+        let p2 = agents::build_resume_prompt(claude, &[], second);
+        let r2 = agents::run_session(claude, &agents::Session::Resume(sid.clone()), &p2, &dir, |_| {}, never()).await.unwrap();
+        assert_eq!(r2.session_id.as_deref(), Some(sid.as_str()));
+        println!("REANUDANDO  1: {:?}\n            2: {:?} pasos={} «{}»", r1.usage, r2.usage, reads(&r2), r2.text);
+
+        // Como antes: sesión nueva con el historial como texto
+        let history = vec![
+            store::Message { role: "user".into(), text: first.into(), agent: None, agent_name: None, ts: String::new(), steps: None },
+            store::Message { role: "assistant".into(), text: r1.text.clone(), agent: Some("claude".into()), agent_name: Some("Claude".into()), ts: String::new(), steps: Some(r1.steps.clone()) },
+        ];
+        let r3 = agents::run_session(claude, &agents::Session::None, &agents::build_prompt(claude, &history, second), &dir, |_| {}, never()).await.unwrap();
+        println!("COMO ANTES  2: {:?} pasos={} «{}»", r3.usage, reads(&r3), r3.text);
     }
 }

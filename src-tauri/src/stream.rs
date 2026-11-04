@@ -164,6 +164,7 @@ pub struct Parser {
     final_text: Option<String>,
     plain: String,
     usage: Usage,
+    session_id: Option<String>,
 }
 
 impl Parser {
@@ -171,7 +172,7 @@ impl Parser {
         let cwd = cwd.to_string_lossy().trim_end_matches('/').to_string();
         // En macOS /tmp es /private/tmp: algunas CLIs informan una u otra ruta.
         let cwd_alt = cwd.strip_prefix("/private").map(str::to_string).unwrap_or_else(|| format!("/private{cwd}"));
-        Parser { format, cwd, cwd_alt, steps: vec![], index: HashMap::new(), final_text: None, plain: String::new(), usage: Usage::default() }
+        Parser { format, cwd, cwd_alt, steps: vec![], index: HashMap::new(), final_text: None, plain: String::new(), usage: Usage::default(), session_id: None }
     }
 
     /// Ruta relativa al proyecto si está dentro de él.
@@ -287,6 +288,9 @@ impl Parser {
             return vec![self.put(Step { id: "out".into(), kind: "text".into(), detail: text, status: "running".into(), ..Default::default() })];
         }
         let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return vec![] };
+        if let Some(id) = session_of(self.format, &v) {
+            self.session_id = Some(id);
+        }
         match self.format {
             Format::Claude => self.feed_claude(&v),
             Format::Codex => self.feed_codex(&v),
@@ -638,6 +642,11 @@ impl Parser {
         }
     }
 
+    /// Id de la sesión de la CLI, si lo ha dicho (docs/plan-reanudar-sesiones.md §2).
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id.clone()
+    }
+
     /// Uso acumulado (tokens, coste, peticiones) de la CLI.
     pub fn usage(&self) -> Usage {
         self.usage.clone()
@@ -659,6 +668,24 @@ impl Parser {
             }
         }
         self.steps
+    }
+}
+
+/// Id de sesión que trae un evento, según la CLI. Vale el último que llegue: agy, si no encuentra
+/// la conversación pedida, abre otra y lo dice con su id.
+fn session_of(format: Format, v: &Value) -> Option<String> {
+    let s = |x: &Value| x.as_str().filter(|t| !t.is_empty()).map(str::to_string);
+    match format {
+        // Todos los eventos del stream-json llevan `session_id`.
+        Format::Claude => s(&v["session_id"]),
+        // {"type":"thread.started","thread_id":"…"}
+        Format::Codex => (v["type"] == "thread.started").then(|| s(&v["thread_id"])).flatten(),
+        // Cada evento lleva `sessionID` («ses_…»).
+        Format::OpenCode => s(&v["sessionID"]),
+        // {"event":"init","conversation_id":…} y {"event":"result","result":{"conversation_id":…}}
+        Format::Agy => s(&v["conversation_id"]).or_else(|| s(&v["result"]["conversation_id"])),
+        Format::Copilot => s(&v["sessionId"]).or_else(|| s(&v["data"]["sessionId"])),
+        Format::Plain => None,
     }
 }
 
@@ -823,6 +850,23 @@ mod tests {
         ];
         assert_eq!(summary(&steps).unwrap(), "(Acciones: ejecutó `npm test` (código 1); editó src/a.rs)");
     }
+
+    #[test]
+    fn id_de_sesion() {
+        // Salidas reales del 04/11/2026 (recortadas).
+        let p = run(Format::Claude, &[r#"{"type":"system","subtype":"init","session_id":"24d84a06-eb17-4bd5-8a13-cc72ffdf7558"}"#]);
+        assert_eq!(p.session_id().as_deref(), Some("24d84a06-eb17-4bd5-8a13-cc72ffdf7558"));
+        let p = run(Format::Codex, &[r#"{"type":"thread.started","thread_id":"01a1a59b-610e-7163-84d1-bdb9cf72e47b"}"#, r#"{"type":"turn.started"}"#]);
+        assert_eq!(p.session_id().as_deref(), Some("01a1a59b-610e-7163-84d1-bdb9cf72e47b"));
+        let p = run(Format::OpenCode, &[r#"{"type":"step_start","sessionID":"ses_e5a645116ffeqKJVIvnr9bfshc","part":{}}"#]);
+        assert_eq!(p.session_id().as_deref(), Some("ses_e5a645116ffeqKJVIvnr9bfshc"));
+        let p = run(Format::Agy, &[
+            r#"{"event":"init","conversation_id":"735399fc-9c28-4db3-a3f1-aaf6f99e8b5b","init":{}}"#,
+            r#"{"event":"result","result":{"conversation_id":"52b4d054-9472-4090-b391-0864f044366f","status":"SUCCESS","response":"Hola"}}"#,
+        ]);
+        assert_eq!(p.session_id().as_deref(), Some("52b4d054-9472-4090-b391-0864f044366f"));
+        assert_eq!(run(Format::Codex, &[r#"{"type":"turn.started"}"#]).session_id(), None);
+    }
 }
 
 /// Comprueba los traductores con salidas reales guardadas en una carpeta:
@@ -844,4 +888,5 @@ fn formatos_reales() {
             println!("   [{}|{}] {} {}", s.kind, s.status, s.detail.replace('\n', " ⏎ ").chars().take(80).collect::<String>(), s.exit_code.map(|c| format!("(exit {c})")).unwrap_or_default());
         }
     }
+
 }

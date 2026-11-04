@@ -47,6 +47,8 @@ El panel del chat tiene dos pestañas:
 
 Las respuestas de los agentes se ven en Markdown: tablas, listas y bloques de código con colores y botón para copiar. Los enlaces web se abren en el navegador y las rutas del proyecto, en el panel de archivos.
 
+**Cada agente sigue su propia sesión.** En una conversación, cada CLI reanuda su sesión (`--resume` y equivalentes) en vez de empezar de cero: recuerda lo que leyó y aprovecha la caché, y un mensaje de seguimiento a Claude cuesta unas 20 veces menos. Si cambias de agente, al volver recibe solo lo que se habló sin él. Detalles en `docs/plan-reanudar-sesiones.md`.
+
 **Instalar** e **Iniciar sesión** abren un terminal dentro de la app con el instalador oficial o el login de cada CLI. Los enlaces del terminal se abren en el navegador con un clic.
 
 | Agente | Instalación | Inicio de sesión |
