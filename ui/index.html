@@ -80,7 +80,7 @@
   .pill.ready { color: var(--ok); }
   .pill.login, .pill.missing { color: var(--warn); }
   .pill.checking { color: var(--muted); }
-  #layout { flex: 1; display: flex; min-height: 0; }
+  #layout { flex: 1; display: flex; min-height: 0; overflow: hidden; }
   #chat { flex: 1; display: flex; flex-direction: column; min-width: 320px; min-height: 0; }
   #chatView { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   #chatView[hidden], #shellView[hidden] { display: none; }
@@ -169,7 +169,8 @@
 
   #resizer { width: 5px; cursor: col-resize; background: var(--border); flex: none; }
   #resizer:hover, #resizer.dragging { background: var(--me); }
-  #panel { width: var(--panel-w, 42%); min-width: 260px; max-width: 75%; display: flex; flex-direction: column; background: var(--panel); flex: none; }
+  /* El ancho guardado está en px: al pasar a una ventana más estrecha, el panel cede y el chat conserva sus 320 px. */
+  #panel { width: var(--panel-w, 42%); min-width: min(260px, calc(100% - 325px)); max-width: min(75%, calc(100% - 325px)); display: flex; flex-direction: column; background: var(--panel); flex: none; }
   body.no-panel #panel, body.no-panel #resizer { display: none; }
   body.council-wide #chat, body.council-wide #resizer { display: none; }
   body.council-wide #panel { width: 100%; max-width: none; }
@@ -1337,7 +1338,7 @@
     $('resizer').classList.add('dragging');
     $('resizer').setPointerCapture(e.pointerId);
     const move = (ev) => {
-      const w = Math.min(Math.max(window.innerWidth - ev.clientX, 260), window.innerWidth * 0.75);
+      const w = Math.min(Math.max(window.innerWidth - ev.clientX, 260), window.innerWidth * 0.75, window.innerWidth - 325);
       document.documentElement.style.setProperty('--panel-w', `${w}px`);
       store.set('panelWidth', Math.round(w));
     };
