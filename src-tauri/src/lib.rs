@@ -461,6 +461,17 @@ fn council_board_save(id: String, board: serde_json::Value) -> Result<(), String
     council::board_save(&id, &board)
 }
 
+/// Pizarra libre del proyecto (sin consejo).
+#[tauri::command]
+fn project_board_get(current: State<'_, CurrentProject>) -> Result<Option<serde_json::Value>, String> {
+    Ok(project::board_get(&current.get()?))
+}
+
+#[tauri::command]
+fn project_board_save(current: State<'_, CurrentProject>, board: serde_json::Value) -> Result<(), String> {
+    project::board_save(&current.get()?, &board)
+}
+
 #[tauri::command]
 fn list_conversations(current: State<'_, CurrentProject>) -> Vec<store::Summary> {
     current.key().map(|k| store::list(&k)).unwrap_or_default()
@@ -661,6 +672,8 @@ pub fn run() {
             council_approve,
             council_board_get,
             council_board_save,
+            project_board_get,
+            project_board_save,
             list_conversations,
             get_conversation,
             term_start,

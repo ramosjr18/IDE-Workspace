@@ -116,7 +116,7 @@ Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
 
 ### Vista de pizarra
 
-- El botón del lápiz en la barra de la pestaña **Consejo** cambia entre la vista de columnas y una pizarra (Excalidraw). La app recuerda la última vista elegida.
+- La pizarra (Excalidraw) tiene su propia pestaña, **Pizarra**, en el panel derecho. Con un consejo abierto muestra su tablero, con las tarjetas de los participantes; sin consejo, una pizarra libre del proyecto, que se guarda aparte. Se puede ampliar a toda la ventana.
 - Cada tarjeta es un rectángulo coloreado por tipo (propuesta, riesgo, apoyo, objeción, pregunta, comentario), con columnas por agente, y las respuestas se unen con flechas.
 - Se pueden mover, agrupar, conectar y dibujar libremente. Se guarda solo, por consejo.
 - Las tarjetas nuevas aparecen en la pizarra mientras el consejo trabaja, sin mover lo que ya se ha colocado. Si borras una tarjeta de la pizarra, no vuelve a aparecer (en las columnas sigue estando).

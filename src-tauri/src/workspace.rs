@@ -291,10 +291,31 @@ pub fn reload_on_ui_change(app: AppHandle) {
     let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("ui");
     let Ok(ui) = ui.canonicalize() else { return };
     let vendor = ui.join("vendor");
-    let handle = app.clone();
+    // Solo cuenta que cambie la fecha de modificación: abrir o leer los archivos (lo hace la propia
+    // recarga) también genera eventos y provocaría un bucle de recargas.
+    fn newest(dir: &std::path::Path, skip: &std::path::Path) -> Option<std::time::SystemTime> {
+        let mut best = None;
+        for e in fs::read_dir(dir).ok()?.flatten() {
+            let p = e.path();
+            if p.starts_with(skip) {
+                continue;
+            }
+            let t = if p.is_dir() { newest(&p, skip) } else { e.metadata().ok().and_then(|m| m.modified().ok()) };
+            best = best.max(t);
+        }
+        best
+    }
+    let last = std::sync::Mutex::new(newest(&ui, &vendor));
+    let (handle, root, skip) = (app.clone(), ui.clone(), vendor.clone());
     let debouncer = new_debouncer(Duration::from_millis(250), move |res: DebounceEventResult| {
         let Ok(events) = res else { return };
-        if events.iter().any(|e| !e.path.starts_with(&vendor)) {
+        if !events.iter().any(|e| !e.path.starts_with(&skip)) {
+            return;
+        }
+        let now = newest(&root, &skip);
+        let mut last = last.lock().unwrap();
+        if now > *last {
+            *last = now;
             for w in handle.webview_windows().values() {
                 let _ = w.eval("location.reload()");
             }

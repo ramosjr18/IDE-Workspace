@@ -204,8 +204,7 @@
   .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
   #councilBody { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
   #councilBody[hidden] { display: none; }
-  #councilCanvas { flex: 1; min-height: 0; position: relative; }
-  #councilCanvas[hidden] { display: none; }
+  #boardCanvas { flex: 1; min-height: 0; position: relative; }
   #councilSelect { flex: 1; min-width: 0; }
   .c-head { padding: 12px 14px 8px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
   .c-topic { font-weight: 700; font-size: 15px; }
@@ -435,6 +434,7 @@
       <button type="button" role="tab" id="tabTree" class="tab active needs-project">Worktree <span id="treeCount" class="count"></span></button>
       <button type="button" role="tab" id="tabFile" class="tab needs-project">Archivo <span id="fileTabName" class="count"></span></button>
       <button type="button" role="tab" id="tabCouncil" class="tab needs-project">Consejo <span id="councilTabState" class="count"></span></button>
+      <button type="button" role="tab" id="tabBoard" class="tab needs-project">Pizarra</button>
       <button type="button" role="tab" id="tabUsage" class="tab">Uso</button>
       <button type="button" role="tab" id="tabAgents" class="tab needs-project">Agentes <span id="agentsCount" class="count"></span></button>
     </div>
@@ -495,12 +495,20 @@
         <select id="councilSelect" aria-label="Consejos de este proyecto"></select>
         <span class="actions">
           <button type="button" class="icon" id="newCouncil" title="Nuevo consejo"><i class="codicon codicon-add"></i></button>
-          <button type="button" class="icon" id="councilMode" title="Ver como pizarra" aria-pressed="false"><i class="codicon codicon-edit"></i></button>
           <button type="button" class="icon" id="widenCouncil" title="Ampliar el tablero (oculta el chat)" aria-pressed="false"><i class="codicon codicon-screen-full"></i></button>
         </span>
       </div>
       <div id="councilBody"></div>
-      <div id="councilCanvas" hidden></div>
+    </div>
+    <div id="boardView" class="view" hidden>
+      <div class="toolbar">
+        <span class="section-title">Pizarra</span>
+        <span id="boardSource" class="muted"></span>
+        <span class="actions">
+          <button type="button" class="icon" id="widenBoard" title="Ampliar (oculta el chat)" aria-pressed="false"><i class="codicon codicon-screen-full"></i></button>
+        </span>
+      </div>
+      <div id="boardCanvas"></div>
     </div>
   </aside>
 </main>
@@ -1225,9 +1233,10 @@
     loadTree();
     council = null;
     const savedCouncil = store.get(`council:${p.path}`);
-    if (savedCouncil) invoke('council_get', { id: savedCouncil }).then((c) => { council = c; renderCouncil(); }).catch(() => {});
+    if (savedCouncil) invoke('council_get', { id: savedCouncil }).then((c) => { council = c; renderCouncil(); openBoard(); }).catch(() => {});
     renderCouncil();
     loadCouncilList();
+    openBoard(); // la pizarra del proyecto nuevo, si la pestaña está abierta
     await loadConversation(store.get(convKey()) || null);
     await loadConversationList();
   }
@@ -1316,9 +1325,12 @@
     $('usageView').hidden = name !== 'usage';
     $('tabAgents').classList.toggle('active', name === 'agents');
     $('agentsView').hidden = name !== 'agents';
+    $('tabBoard').classList.toggle('active', name === 'board');
+    $('boardView').hidden = name !== 'board';
+    if (name === 'board') openBoard(); else closeBoard();
     usageVisible(name === 'usage');
     if (name === 'agents') requestAnimationFrame(fitPanes);
-    if (name !== 'council' && name !== 'agents' && document.body.classList.contains('council-wide')) toggleWide(false);
+    if (!['council', 'agents', 'board'].includes(name) && document.body.classList.contains('council-wide')) toggleWide(false);
   }
   $('tabTree').addEventListener('click', () => setTab('tree'));
   $('tabFile').addEventListener('click', () => setTab('file'));
@@ -1676,8 +1688,7 @@
   let council = null; // consejo abierto en el tablero
   const councilActivity = {}; // agente → lo que está haciendo ahora
   let councilReplyTo = null;
-  let councilMode = store.get('councilMode') === 'pizarra' ? 'pizarra' : 'columnas';
-  let pizarra = null; // { id, handle, timer, lastVersion }
+  let pizarra = null; // { id, council, handle, timer, lastVersion } · id: el del consejo o «proyecto»
   let pizarraTurno = 0; // turno de apertura: se incrementa en cada open/close para descartar montajes obsoletos
   let pizarraCargando = null; // promesa de carga del bundle de pizarra, para no repetirla
   const COLORS = ['#c8643b', '#3d6fc4', '#8a57c2', '#2f9a8a', '#b08a1e', '#c24f7f'];
@@ -1725,7 +1736,8 @@
       return;
     }
     pizarra.lastVersion = boardVersion(els);
-    invoke('council_board_save', { id: pizarra.id, board: PizarraEscena.boardToSave(els, pizarra.appState) }).catch((err) => councilError(err));
+    const board = PizarraEscena.boardToSave(els, pizarra.appState);
+    (pizarra.council ? invoke('council_board_save', { id: pizarra.id, board }) : invoke('project_board_save', { board })).catch((err) => councilError(err));
   }
 
   // Cierra la pizarra del consejo guardando lo pendiente y liberando su vista.
@@ -1737,32 +1749,35 @@
     pizarra = null;
   }
 
-  // Abre la pizarra del consejo abierto: carga el bundle, recupera lo guardado, monta la escena y añade lo que falte tras esperar la fuente.
+  // Abre la pizarra de la pestaña Pizarra: la del consejo abierto (con sus tarjetas) o, sin consejo, la libre del proyecto.
   async function openBoard() {
     try {
-      if (!council) { closeBoard(); return; }
-      if (pizarra && pizarra.id === council.id) { syncBoard(); return; }
+      if ($('boardView').hidden || !project) { closeBoard(); return; }
+      const id = council ? council.id : `proyecto:${project.path}`;
+      $('boardSource').textContent = council ? `· consejo «${council.topic}»` : '· libre del proyecto (abre un consejo para ver sus tarjetas)';
+      if (pizarra && pizarra.id === id) { syncBoard(); return; }
       closeBoard();
       const turno = ++pizarraTurno; // turno de esta apertura: captura tras el closeBoard de arriba, que también sube el turno
+      const vigente = () => turno === pizarraTurno && !$('boardView').hidden;
       await loadPizarra();
-      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
-      const saved = await invoke('council_board_get', { id: council.id });
-      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
+      if (!vigente()) return;
+      const saved = council ? await invoke('council_board_get', { id }) : await invoke('project_board_get');
+      if (!vigente()) return;
       // habiaVista recuerda si había appState guardado: solo encuadra al abrir cuando no hay vista propia.
       const habiaVista = !!(saved && saved.appState);
       const existing = (saved && saved.elements) || [];
-      const handle = Pizarra.mount($('councilCanvas'), { elements: existing, appState: saved && saved.appState }, {
+      const handle = Pizarra.mount($('boardCanvas'), { elements: existing, appState: saved && saved.appState }, {
         theme: dark.matches ? 'dark' : 'light',
         onChange: (els, appState) => {
           if (pizarra) { pizarra.appState = appState; saveBoard(false); }
         },
       });
-      pizarra = { id: council.id, handle, timer: null, lastVersion: boardVersion(existing), appState: (saved && saved.appState) || null };
+      pizarra = { id, council: !!council, handle, timer: null, lastVersion: boardVersion(existing), appState: (saved && saved.appState) || null };
       await Pizarra.fontsReady();
-      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
+      if (!vigente()) return;
       syncBoard();
       // Encuadra las tarjetas la primera vez: si el usuario ya tenía su vista guardada, se respeta.
-      if (!habiaVista) pizarra.handle.scrollToContent();
+      if (!habiaVista && existing.length + (council?.members?.length || 0) > 0) pizarra.handle.scrollToContent();
     } catch (err) { councilError(err); }
   }
 
@@ -1776,32 +1791,18 @@
     saveBoard(false);
   }
 
-  // Muestra las columnas o la pizarra según el modo y el consejo abierto, montándola o cerrándola.
-  function applyCouncilMode() {
-    const on = councilMode === 'pizarra' && !!council;
-    $('councilCanvas').hidden = !on;
-    $('councilBody').hidden = on;
-    $('councilMode').setAttribute('aria-pressed', String(councilMode === 'pizarra'));
-    $('councilMode').setAttribute('title', on ? 'Ver como columnas' : 'Ver como pizarra');
-    if (on) openBoard();
-    else closeBoard();
-  }
-
   function toggleWide(force) {
     const on = force ?? !document.body.classList.contains('council-wide');
     document.body.classList.toggle('council-wide', on);
     $('widenCouncil').setAttribute('aria-pressed', String(on));
     $('widenAgents').setAttribute('aria-pressed', String(on));
+    $('widenBoard').setAttribute('aria-pressed', String(on));
     requestAnimationFrame(fitPanes);
   }
   $('widenCouncil').addEventListener('click', () => toggleWide());
-  // Alterna el modo de la vista del consejo entre columnas y pizarra y guarda la preferencia.
-  $('councilMode').addEventListener('click', () => {
-    councilMode = councilMode === 'pizarra' ? 'columnas' : 'pizarra';
-    store.set('councilMode', councilMode);
-    applyCouncilMode();
-  });
-  $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); applyCouncilMode(); });
+  $('widenBoard').addEventListener('click', () => toggleWide());
+  $('tabBoard').addEventListener('click', () => setTab('board'));
+  $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); });
   $('newCouncil').addEventListener('click', () => openCouncilDialog(''));
   $('councilSelect').addEventListener('change', () => openCouncil($('councilSelect').value || null));
 
@@ -1820,7 +1821,7 @@
     councilReplyTo = null;
     store.set(`council:${project.path}`, id || '');
     renderCouncil();
-    applyCouncilMode();
+    openBoard(); // si la pestaña Pizarra está abierta, pasa al tablero de este consejo
     loadCouncilList();
   }
 
@@ -2289,7 +2290,7 @@
       const sameDoc = council?.synthesis?.document === c.synthesis?.document;
       council = c;
       renderCouncil();
-      if (councilMode === 'pizarra') syncBoard();
+      syncBoard();
       if (draftComment) document.getElementById('cCommentText').value = draftComment;
       if (draftDoc && sameDoc && c.phase !== 'approved') document.querySelector('.c-doc').value = draftDoc;
     }

@@ -155,3 +155,26 @@ mod tests {
         assert_eq!(initial_from(none(), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")))), None);
     }
 }
+
+/// Pizarra libre del proyecto (pestaña Pizarra sin consejo abierto): `data_dir()/boards/<sha1 de la ruta>.json`.
+fn board_file(project: &Path) -> PathBuf {
+    let hash = sha1_smol::Sha1::from(project.to_string_lossy().as_bytes()).digest().to_string();
+    data_dir().join("boards").join(format!("{hash}.json"))
+}
+
+pub fn board_get(project: &Path) -> Option<serde_json::Value> {
+    fs::read_to_string(board_file(project)).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
+
+pub fn board_save(project: &Path, board: &serde_json::Value) -> Result<(), String> {
+    if !board.is_object() {
+        return Err("La pizarra debe ser un objeto JSON".into());
+    }
+    let json = serde_json::to_string(board).map_err(|e| e.to_string())?;
+    if json.len() > 5_000_000 {
+        return Err("La pizarra es demasiado grande".into());
+    }
+    let file = board_file(project);
+    fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+    write_atomic(&file, &json)
+}
