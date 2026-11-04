@@ -1916,6 +1916,19 @@
     const list = await invoke('diagrams_list').catch(() => []);
     if (list.some((d) => d.id === e.payload.id)) showDiagram(e.payload.id);
   });
+  // `agentes pizarra --imagen`: Rust manda la escena guardada; se dibuja en PNG y se le devuelven los bytes.
+  listen('board-image', async (e) => {
+    const { req, scene } = e.payload;
+    try {
+      await loadPizarra();
+      await Pizarra.fontsReady();
+      const s = await diagramScene(scene);
+      const png = await Pizarra.toPng(s);
+      await invoke('board_image_done', { req, data: Array.from(png), error: null });
+    } catch (err) {
+      await invoke('board_image_done', { req, data: null, error: `No se pudo hacer la imagen: ${err.message || err}` }).catch(() => {});
+    }
+  });
   // Bloques ```mermaid de las respuestas: a su pizarra.
   const MERMAID_RE = /```mermaid[^\n]*\n([\s\S]*?)```/g;
   function mermaidBlocks(text) {

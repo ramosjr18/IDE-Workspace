@@ -5,7 +5,7 @@ import "./ruta.js";
 import React from "react";
 import { createRoot } from "react-dom/client";
 // Componente de la pizarra del consejo (IDE-4) y su CSS (lleva las @font-face).
-import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
+import { Excalidraw, convertToExcalidrawElements, exportToBlob } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 // Mermaid → Excalidraw (diagramas que dibujan los agentes desde el chat).
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
@@ -33,6 +33,19 @@ window.Pizarra = {
     }
     // Carga la fuente ya registrada para que las medidas de texto la usen; si falla, no rompe.
     try { await document.fonts.load("16px Excalifont"); } catch (err) {}
+  },
+  // toPng dibuja una escena ({ elements, files }) en PNG con fondo blanco, sin montarla; devuelve los bytes (Uint8Array).
+  async toPng(scene) {
+    const elements = (scene.elements || []).filter((e) => !e.isDeleted);
+    if (elements.length === 0) throw new Error("La pizarra está vacía");
+    const blob = await exportToBlob({
+      elements,
+      files: scene.files || {},
+      mimeType: "image/png",
+      appState: { exportBackground: true, viewBackgroundColor: "#ffffff", exportWithDarkMode: false },
+      exportPadding: 24,
+    });
+    return new Uint8Array(await blob.arrayBuffer());
   },
   // mount dibuja el tablero en el elemento dado y devuelve controles para actualizarlo o liberarlo.
   mount(el, scene, options) {
