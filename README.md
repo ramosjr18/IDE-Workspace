@@ -72,8 +72,9 @@ Para decisiones con peso (una política, un ADR, una arquitectura), en lugar de 
 
 Se convoca escribiendo `/consejo tema` en el chat, desde **☰ → Convocar consejo** o con **+** en la pestaña **Consejo**. Eliges:
 
+- **Plantilla** (opcional): rellena el resto de campos con una combinación guardada. Ver «Roles y plantillas».
 - **Tema** y **resultado**: ADR (`docs/adr/`), política (`docs/politicas/`) o nota de decisión (`docs/decisiones/`).
-- **Participantes**, cada uno con un rol: arquitecto, abogado del diablo, seguridad, coste y operación, usuario y producto, o libre.
+- **Participantes**, cada uno con un rol (arquitecto, abogado del diablo, seguridad, coste y operación, usuario y producto, libre, o los que hayas creado).
 - **Moderador**: resume y redacta; mejor uno que no participe.
 - **Contexto**: la conversación actual, que puedes editar antes de empezar.
 
@@ -84,6 +85,14 @@ Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
 3. **Converger**: el moderador resume acuerdos y puntos abiertos y redacta el documento.
 4. **Evaluar** (si está activado): ver «Evaluador independiente».
 5. **Revisión**: editas el documento si quieres y eliges **Aprobar y guardar**, **Otra ronda** o **Rehacer síntesis**. También puedes añadir tus comentarios, que cuentan en la siguiente ronda.
+
+### Roles y plantillas
+
+- Los roles no están fijos en el código: se editan en **☰ → Roles y plantillas** (crear, renombrar, cambiar la instrucción y quitar). Por defecto son los seis de siempre.
+- Al convocar, el campo **Plantilla** rellena resultado, participantes con sus roles y moderador. Si algún agente de la plantilla no está disponible, lo avisa.
+- **Guardar como plantilla**, en el mismo diálogo, guarda la selección actual con un nombre. Las plantillas se quitan desde **☰ → Roles y plantillas**.
+- No se puede quitar un rol que use una plantilla: la app lo indica al guardar.
+- Todo se guarda en `~/.ide-workspace-chat/council-config.json` (o bajo `CHAT_DATA_DIR`). Si el archivo falta o no es válido, se usan los roles por defecto.
 
 ### Evaluador independiente
 
@@ -122,6 +131,7 @@ Mientras un agente trabaja, el panel muestra el archivo que está editando (bot�
 | Caché propia | `src-tauri/src/store.rs` | Guarda cada conversación en disco (`~/.ide-workspace-chat/conversations`, o `CHAT_DATA_DIR`) con qué agente escribió cada respuesta. No depende de ninguna CLI. |
 | Adaptadores | `src-tauri/src/agents.rs` | Convierte la conversación guardada en el contexto del CLI elegido y lo ejecuta. Aquí se cambian comandos y modelos. |
 | Consejo | `src-tauri/src/council.rs` | Fases del consejo, prompts, tarjetas, síntesis y documento final. |
+| Roles | `src-tauri/src/roles.rs` | Roles del consejo y plantillas, editables desde la app (`council-config.json`). |
 | Pasos en vivo | `src-tauri/src/stream.rs` | Traduce la salida JSON de cada CLI a pasos comunes (comando, edición, lectura, texto…). |
 | Proyecto | `src-tauri/src/project.rs` | Carpeta donde trabajan los agentes y comando `agentes`. |
 | Panel de archivos | `src-tauri/src/workspace.rs` | Árbol del proyecto, estado git, líneas cambiadas, guardar y vigilancia de la carpeta. |
