@@ -571,6 +571,12 @@ fn diagram_get(current: State<'_, CurrentProject>, id: String) -> Result<Option<
     Ok(project::diagram_get(&panes::repo_root(&current.get()?), &id))
 }
 
+/// La ventana entrega el PNG pedido por `agentes pizarra --imagen` (o el error si no pudo hacerlo).
+#[tauri::command]
+fn board_image_done(req: String, data: Option<Vec<u8>>, error: Option<String>) {
+    panes::image_done(&req, match data { Some(d) => Ok(d), None => Err(error.unwrap_or_else(|| "La ventana no pudo hacer la imagen".into())) });
+}
+
 #[tauri::command]
 fn diagram_save(current: State<'_, CurrentProject>, id: String, board: serde_json::Value) -> Result<(), String> {
     project::diagram_save(&panes::repo_root(&current.get()?), &id, &board)
@@ -794,6 +800,7 @@ pub fn run() {
             project_board_save,
             diagrams_list,
             diagram_get,
+            board_image_done,
             diagram_save,
             diagram_create,
             diagram_delete,

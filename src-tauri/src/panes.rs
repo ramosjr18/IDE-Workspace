@@ -472,6 +472,17 @@ pub fn launch(app: &AppHandle, req: LaunchRequest, loads: &[accounts::Load]) -> 
 
 // ---------- Servidor local para `agentes run` ----------
 
+/// Imágenes pedidas a la ventana y aún sin respuesta: id de petición → canal para la respuesta.
+static PENDING_IMAGES: std::sync::LazyLock<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// La ventana entrega la imagen (o un error) de una petición `agentes pizarra --imagen`.
+pub fn image_done(req: &str, result: Result<Vec<u8>, String>) {
+    if let Some(tx) = PENDING_IMAGES.lock().unwrap().remove(req) {
+        let _ = tx.send(result);
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase")]
 enum Request {
@@ -499,6 +510,8 @@ enum Request {
         format: String,
         text: String,
     },
+    /// `agentes pizarra --imagen`: PNG de un diagrama o de la pizarra libre.
+    Image { cwd: String, which: String, path: String },
 }
 
 #[derive(Deserialize)]
@@ -568,6 +581,28 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
                     Reply { ok: true, error: None, pane: None, panes: None, board: Some(d.id) }
                 }
                 Err(e) => err(e),
+            }
+        }
+        Request::Image { cwd, which, path } => {
+            let root = repo_root(Path::new(&cwd));
+            let id = match crate::project::diagram_resolve(&root, &which) {
+                Ok(i) => i,
+                Err(e) => return err(e),
+            };
+            let req = uuid::Uuid::new_v4().to_string();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            PENDING_IMAGES.lock().unwrap().insert(req.clone(), tx);
+            let _ = app.emit("board-image", serde_json::json!({ "req": req.clone(), "project": root.to_string_lossy(), "id": id }));
+            match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
+                Ok(Ok(Ok(bytes))) => match std::fs::write(&path, bytes) {
+                    Ok(()) => Reply { ok: true, board: Some(path), ..Default::default() },
+                    Err(e) => err(format!("No se pudo guardar {path}: {e}")),
+                },
+                Ok(Ok(Err(e))) => err(e),
+                Ok(Err(_)) | Err(_) => {
+                    PENDING_IMAGES.lock().unwrap().remove(&req);
+                    err("La ventana de la app no respondió: ¿está abierta en este proyecto?")
+                }
             }
         }
         Request::Kill { id } => {
@@ -663,6 +698,8 @@ Uso:
   agentes pizarra --listar  diagramas de la pizarra de este proyecto (id, título)
   agentes pizarra --leer <id|título|proyecto>
                             código original y pizarra actual en texto, con los cambios del usuario
+  agentes pizarra --imagen <id|título|proyecto> <ruta.png>
+                            exporta la pizarra a PNG (necesita la app abierta en este proyecto)
 
 --worktree crea (o reutiliza) .claude/worktrees/<nombre> en una rama nueva desde HEAD
 (agentes/<nombre> si no se indica --branch) y ejecuta la CLI ahí.
@@ -871,6 +908,19 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
                 Some("--leer") => {
                     let arg: String = it.next().ok_or("Uso: agentes pizarra --leer <id|título|proyecto>")?;
                     println!("{}", crate::project::board_text(&repo_root(Path::new(&cwd)), &arg)?);
+                    return Ok(0);
+                }
+                Some("--imagen") => {
+                    let uso = "Uso: agentes pizarra --imagen <id|título|proyecto> <ruta.png>";
+                    let which: String = it.next().ok_or(uso)?;
+                    let ruta: String = it.next().ok_or(uso)?;
+                    let mut ruta_p = PathBuf::from(ruta.as_str());
+                    if !ruta_p.is_absolute() {
+                        ruta_p = Path::new(&cwd).join(ruta_p);
+                    }
+                    let ruta_abs = ruta_p.to_string_lossy().to_string();
+                    request(serde_json::json!({ "cmd": "image", "cwd": cwd, "which": which, "path": ruta_abs }))?;
+                    println!("Imagen guardada en {ruta_abs}");
                     return Ok(0);
                 }
                 _ => {}
