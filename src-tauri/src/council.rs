@@ -13,20 +13,6 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Roles predefinidos: id, nombre visible e instrucción para el agente.
-pub const ROLES: &[(&str, &str, &str)] = &[
-    ("arquitecto", "Arquitecto", "Piensa en la estructura a largo plazo: simplicidad, mantenibilidad, coherencia con lo que ya existe en el repo."),
-    ("abogado", "Abogado del diablo", "Busca activamente los puntos débiles, los supuestos no demostrados y las alternativas que nadie ha considerado. No des la razón por cortesía."),
-    ("seguridad", "Seguridad", "Evalúa riesgos de seguridad, privacidad, cumplimiento y qué puede salir mal en producción."),
-    ("coste", "Coste y operación", "Evalúa el coste, el esfuerzo de implantación, la operación diaria y la carga para el equipo."),
-    ("usuario", "Usuario y producto", "Defiende la experiencia de quien usa el producto y el valor que aporta la decisión."),
-    ("libre", "Libre", "Da tu opinión sincera y razonada desde el ángulo que te parezca más importante."),
-];
-
-fn role_info(id: &str) -> (&'static str, &'static str) {
-    ROLES.iter().find(|r| r.0 == id).map(|r| (r.1, r.2)).unwrap_or(("Libre", ROLES[5].2))
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
@@ -102,6 +88,21 @@ pub struct Verdict {
     pub capped: bool,
 }
 
+/// Una llamada a un agente durante el consejo: cuánto tardó y qué consumió.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Call {
+    pub agent: String,
+    pub agent_name: String,
+    /// diverge | contrast | converge | judge
+    pub phase: String,
+    pub round: u32,
+    pub duration_ms: u64,
+    pub ok: bool,
+    #[serde(default)]
+    pub usage: crate::stream::Usage,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Council {
@@ -115,7 +116,7 @@ pub struct Council {
     pub context: String,
     pub members: Vec<Member>,
     pub moderator: String,
-    /// diverge | contrast | converge | review | approved | error | cancelled
+    /// diverge | contrast | converge | judge | review | approved | error | cancelled
     pub phase: String,
     pub round: u32,
     pub cards: Vec<Card>,
@@ -129,6 +130,9 @@ pub struct Council {
     pub judge: Judge,
     #[serde(default)]
     pub verdicts: Vec<Verdict>,
+    /// Una llamada por cada ejecución de agente durante el consejo (coste y tiempo, IDE-8).
+    #[serde(default)]
+    pub calls: Vec<Call>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -154,6 +158,46 @@ pub fn save(c: &mut Council) -> Result<(), String> {
     c.updated_at = now();
     let json = serde_json::to_string_pretty(c).map_err(|e| e.to_string())?;
     write_atomic(&dir().join(format!("{}.json", c.id)), &json)
+}
+
+/// Pizarra (Excalidraw) del tablero del consejo: aparte del Council porque, mientras el consejo
+/// está en marcha, la tarea en segundo plano sobrescribe su copia del Council con cada cambio.
+fn boards_dir(base: &Path) -> PathBuf {
+    let d = base.join("boards");
+    let _ = fs::create_dir_all(&d);
+    d
+}
+
+fn read_board(base: &Path, id: &str) -> Option<Value> {
+    if !valid_id(id) {
+        return None;
+    }
+    fs::read_to_string(boards_dir(base).join(format!("{id}.json")))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn write_board(base: &Path, id: &str, board: &Value) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err("Consejo no válido".into());
+    }
+    if !board.is_object() {
+        return Err("La pizarra debe ser un objeto JSON".into());
+    }
+    let json = serde_json::to_string(board).map_err(|e| e.to_string())?;
+    if json.len() > 5_000_000 {
+        return Err("La pizarra es demasiado grande".into());
+    }
+    write_atomic(&boards_dir(base).join(format!("{id}.json")), &json)
+}
+
+pub fn board_get(id: &str) -> Option<Value> {
+    read_board(&dir(), id)
+}
+
+pub fn board_save(id: &str, board: &Value) -> Result<(), String> {
+    get(id).ok_or("Consejo no encontrado")?;
+    write_board(&dir(), id, board)
 }
 
 #[derive(Serialize)]
@@ -205,8 +249,8 @@ pub fn create(
         .into_iter()
         .map(|m| {
             let a = agents::get(&m.agent).ok_or_else(|| format!("Agente desconocido: {}", m.agent))?;
-            let (role_name, _) = role_info(&m.role);
-            Ok(Member { agent: a.id.into(), agent_name: a.name.into(), role: m.role, role_name: role_name.into(), status: "pending".into(), activity: String::new() })
+            let (role_name, _) = crate::roles::role_info(&m.role);
+            Ok(Member { agent: a.id.into(), agent_name: a.name.into(), role: m.role, role_name, status: "pending".into(), activity: String::new() })
         })
         .collect::<Result<Vec<_>, String>>()?;
     agents::get(&moderator).ok_or("Moderador desconocido")?;
@@ -228,6 +272,7 @@ pub fn create(
         error: None,
         judge: Judge { used_rounds: 0, ..judge },
         verdicts: vec![],
+        calls: vec![],
         created_at: ts.clone(),
         updated_at: ts,
     };
@@ -244,7 +289,7 @@ fn output_name(output: &str) -> &'static str {
 }
 
 fn header(c: &Council, agent: &Agent, role: &str) -> String {
-    let (role_name, role_text) = role_info(role);
+    let (role_name, role_text) = crate::roles::role_info(role);
     format!(
         "Participas en un consejo de varios asistentes de IA (Claude, Codex, Copilot…) que deliberan para decidir sobre un tema y redactar {}. Tú eres {} con el rol «{role_name}»: {role_text}\n\
          Estás en MODO SOLO LECTURA: puedes leer archivos del repositorio para fundamentar tu opinión, pero no modifiques nada.\n\n\
@@ -378,6 +423,9 @@ pub fn judge_candidates(c: &Council, seed: u64) -> Vec<&'static Agent> {
 fn extract_json(text: &str) -> Option<Value> {
     let start = text.find('{')?;
     let end = text.rfind('}')?;
+    if end < start {
+        return None;
+    }
     serde_json::from_str(&text[start..=end]).ok()
 }
 
@@ -444,6 +492,19 @@ pub fn add_cards(c: &mut Council, author: &str, author_name: &str, parsed: Vec<(
         let id = format!("C{}", c.cards.len() + 1);
         c.cards.push(Card { id, round: c.round, author: author.into(), author_name: author_name.into(), kind, reply_to, text });
     }
+}
+
+/// Anota una llamada a un agente con su duración y su uso.
+fn record_call(c: &mut Council, agent: &Agent, phase: &str, started: std::time::Instant, usage: Option<&crate::stream::Usage>) {
+    c.calls.push(Call {
+        agent: agent.id.into(),
+        agent_name: agent.name.into(),
+        phase: phase.into(),
+        round: c.round,
+        duration_ms: started.elapsed().as_millis() as u64,
+        ok: usage.is_some(),
+        usage: usage.cloned().unwrap_or_default(),
+    });
 }
 
 /// Texto breve del último paso de un agente, para mostrar en su columna mientras trabaja.
@@ -593,8 +654,10 @@ async fn member_phase(app: &AppHandle, runs: &Runs, shared: Arc<Mutex<Council>>,
             let on_step = |step: &Step| {
                 let _ = app.emit("council-activity", ActivityEvent { council_id: &council_id, agent: agent.id, activity: activity(step) });
             };
+            let started = std::time::Instant::now();
             let result = agents::run_readonly(agent, &prompt, &cwd, on_step, cancel).await;
             let mut c = shared.lock().await;
+            record_call(&mut c, agent, if contrast { "contrast" } else { "diverge" }, started, result.as_ref().ok().map(|r| &r.usage));
             let ok = match result {
                 Ok(r) => {
                     let known: Vec<String> = c.cards.iter().map(|k| k.id.clone()).collect();
@@ -634,7 +697,13 @@ async fn converge(app: &AppHandle, runs: &Runs, shared: Arc<Mutex<Council>>) -> 
     let on_step = |step: &Step| {
         let _ = app.emit("council-activity", ActivityEvent { council_id: &id, agent: "moderator", activity: activity(step) });
     };
-    let r = agents::run_readonly(moderator, &prompt, &cwd, on_step, cancel).await?;
+    let started = std::time::Instant::now();
+    let res = agents::run_readonly(moderator, &prompt, &cwd, on_step, cancel).await;
+    {
+        let mut c = shared.lock().await;
+        record_call(&mut c, moderator, "converge", started, res.as_ref().ok().map(|r| &r.usage));
+    }
+    let r = res?;
     let mut c = shared.lock().await;
     c.synthesis = Some(parse_synthesis(&r.text));
     c.phase = "review".into();
@@ -674,7 +743,10 @@ async fn judge(app: &AppHandle, runs: &Runs, shared: Arc<Mutex<Council>>) -> Res
         let on_step = |step: &Step| {
             let _ = app.emit("council-activity", ActivityEvent { council_id: &id, agent: "judge", activity: activity(step) });
         };
-        match agents::run_readonly(agent, &prompt, &cwd, on_step, cancel).await {
+        let started = std::time::Instant::now();
+        let res = agents::run_readonly(agent, &prompt, &cwd, on_step, cancel).await;
+        record_call(&mut *shared.lock().await, agent, "judge", started, res.as_ref().ok().map(|r| &r.usage));
+        match res {
             Ok(r) => {
                 answer = Some((agent, r.text));
                 break;
@@ -829,6 +901,12 @@ mod tests {
     }
 
     #[test]
+    fn extract_json_llaves_invertidas() {
+        assert_eq!(extract_json("Nota: } ver abajo {"), None);
+        assert!(extract_json("texto {\"a\": 1} fin").is_some());
+    }
+
+    #[test]
     fn sintesis_por_secciones() {
         let s = parse_synthesis("=== ACUERDOS ===\n- Versión en la URL\n=== ABIERTOS ===\n- ¿Dos o tres versiones?\n=== DOCUMENTO ===\n# ADR 1\nTexto");
         assert_eq!(s.agreements, vec!["Versión en la URL"]);
@@ -852,7 +930,7 @@ mod tests {
             members: vec![member("copilot"), member("opencode")], moderator: "codex".into(), phase: "review".into(), round: 1, cards: vec![],
             synthesis: None, document_path: None, error: None,
             judge: Judge { enabled: true, pool: vec!["claude".into(), "codex".into(), "copilot".into(), "opencode".into(), "agy".into()], max_rounds: 2, used_rounds: 0 },
-            verdicts: vec![], created_at: String::new(), updated_at: String::new(),
+            verdicts: vec![], calls: vec![], created_at: String::new(), updated_at: String::new(),
         };
         let firsts: std::collections::HashSet<&str> = (0..20u64).map(|i| judge_candidates(&c, i)[0].id).collect();
         assert_eq!(firsts, ["claude", "agy"].into_iter().collect(), "primero quien no participó ni modera, y varía");
@@ -886,12 +964,83 @@ mod tests {
             error: None,
             judge: Judge::default(),
             verdicts: vec![],
+            calls: vec![],
             created_at: String::new(),
             updated_at: String::new(),
         };
         let rel = write_document(&c, "# ADR").unwrap();
         assert_eq!(rel, "docs/adr/0004-politica-de-versionado-de-la-api.md");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pizarra_guardar_y_leer() {
+        let base = std::env::temp_dir().join(format!("pizarra-test-{}-guardar_y_leer", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let board = serde_json::json!({"type": "excalidraw", "elements": [{"id": "e1"}]});
+        write_board(&base, "00000000-0000-0000-0000-000000000000", &board).unwrap();
+        assert_eq!(read_board(&base, "00000000-0000-0000-0000-000000000000").unwrap(), board);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pizarra_leer_id_inexistente() {
+        let base = std::env::temp_dir().join(format!("pizarra-test-{}-inexistente", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        assert_eq!(read_board(&base, "00000000-0000-0000-0000-000000000000"), None);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pizarra_id_invalido() {
+        let base = std::env::temp_dir().join(format!("pizarra-test-{}-id_invalido", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        assert_eq!(write_board(&base, "../x", &serde_json::json!({"a": 1})).unwrap_err(), "Consejo no válido");
+        assert_eq!(read_board(&base, "../x"), None);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pizarra_debe_ser_objeto() {
+        let base = std::env::temp_dir().join(format!("pizarra-test-{}-no_objeto", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        assert_eq!(
+            write_board(&base, "00000000-0000-0000-0000-000000000000", &serde_json::json!([1, 2])).unwrap_err(),
+            "La pizarra debe ser un objeto JSON"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn consejo_de_prueba() -> Council {
+        let member = |a: &str| Member { agent: a.into(), agent_name: a.into(), role: "libre".into(), role_name: "Libre".into(), status: String::new(), activity: String::new() };
+        Council {
+            id: "x".into(), project: String::new(), conversation_id: None, topic: String::new(), output: "adr".into(), context: String::new(),
+            members: vec![member("copilot"), member("opencode")], moderator: "codex".into(), phase: "review".into(), round: 2, cards: vec![],
+            synthesis: None, document_path: None, error: None,
+            judge: Judge::default(),
+            verdicts: vec![], calls: vec![], created_at: String::new(), updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn llamadas_se_anotan_con_coste_y_fallos() {
+        let mut c = consejo_de_prueba();
+        record_call(&mut c, agents::get("claude").unwrap(), "diverge", std::time::Instant::now(), Some(&crate::stream::Usage { input_tokens: Some(10), ..Default::default() }));
+        record_call(&mut c, agents::get("claude").unwrap(), "diverge", std::time::Instant::now(), None);
+        assert_eq!(c.calls.len(), 2, "dos llamadas anotadas");
+        assert_eq!(c.calls[0].agent, "claude");
+        assert!(c.calls[0].ok);
+        assert_eq!(c.calls[0].usage.input_tokens, Some(10));
+        assert!(!c.calls[1].ok, "una llamada sin uso es un fallo");
+        assert_eq!(c.calls[1].usage, crate::stream::Usage::default());
+    }
+
+    #[test]
+    fn consejo_viejo_sin_calls_deserializa_vacio() {
+        let mut value = serde_json::to_value(&consejo_de_prueba()).unwrap();
+        value.as_object_mut().unwrap().remove("calls");
+        let c: Council = serde_json::from_value(value).unwrap();
+        assert!(c.calls.is_empty(), "los consejos guardados antes no tienen llamadas");
     }
 }
 

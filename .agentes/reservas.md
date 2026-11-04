@@ -2,4 +2,5 @@
 
 | Ticket | Agente | Rama | Archivos | Estado |
 | --- | --- | --- | --- | --- |
-| CHAT-1 | agy (Sonnet) | agente/agy/chat-1 | server.js, public/index.html | cancelado (lo hace el orquestador) |
+
+Los agentes anotan aquí qué archivos reservan antes de trabajar en una rama, para no pisarse.
