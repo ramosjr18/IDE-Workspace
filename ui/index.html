@@ -8,6 +8,7 @@
 <script src="vendor/xterm.js"></script>
 <script src="vendor/addon-fit.js"></script>
 <script src="vendor/monaco/vs/loader.js"></script>
+<script src="maquetas.js"></script>
 <style>
   :root {
     --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -552,6 +553,13 @@
     }
     const message = $('input').value.trim();
     if (!message) return;
+    // /maqueta «tema» pide al agente una maqueta HTML en docs/maquetas/
+    const maqueta = message.match(/^\/maqueta\b\s*([\s\S]*)$/i);
+    if (maqueta && maqueta[1].trim()) {
+      $('input').value = Maquetas.mockupPrompt(maqueta[1].trim());
+      // Se reenvía fuera de este evento: un requestSubmit dentro de submit se ignora.
+      return setTimeout(() => $('form').requestSubmit(), 0);
+    }
     // /consejo «tema» abre el diálogo para convocar un consejo de agentes
     const slash = message.match(/^\/consejo\b\s*([\s\S]*)$/i);
     if (slash) {
@@ -1559,7 +1567,14 @@
       open.addEventListener('click', () => openFile(c.documentPath, { switchTab: true }));
       const back = el('button', { type: 'button', textContent: 'Volver al chat' });
       back.addEventListener('click', () => { toggleWide(false); $('input').focus(); });
-      actions.append(open, back);
+      const mock = el('button', { type: 'button', textContent: 'Maquetar esta decisión' });
+      mock.addEventListener('click', () => {
+        if (sending) return councilError('Espera a que termine el agente del chat.');
+        toggleWide(false);
+        $('input').value = Maquetas.mockupPrompt(c.topic, c.documentPath);
+        $('form').requestSubmit();
+      });
+      actions.append(open, mock, back);
     } else if (!RUNNING.includes(c.phase)) {
       const approve = el('button', { type: 'button', className: 'primary', textContent: 'Aprobar y guardar' });
       approve.addEventListener('click', async () => {
