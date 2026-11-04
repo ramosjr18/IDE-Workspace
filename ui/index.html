@@ -175,8 +175,10 @@
 
   /* Editor (Monaco) */
   #editorHost { flex: 1; position: relative; min-height: 0; }
-  #editor, #diffEditor { position: absolute; inset: 0; }
+  #editor, #diffEditor, #htmlPreview { position: absolute; inset: 0; }
   #editor[hidden], #diffEditor[hidden] { display: none; }
+  #htmlPreview[hidden] { display: none; }
+  #htmlPreview { border: 0; background: #fff; width: 100%; height: 100%; }
   #fileNotice { position: absolute; inset: 0; background: var(--panel); }
   #fileNotice[hidden] { display: none; }
   .gm-added { background: var(--git-add); width: 3px !important; margin-left: 3px; }
@@ -299,6 +301,7 @@
         <span id="filePath" class="path-label"></span>
         <span id="fileStats" class="stats"></span>
         <span class="actions">
+          <button type="button" class="icon" id="previewToggle" title="Vista previa del HTML" aria-pressed="false" hidden><i class="codicon codicon-preview"></i></button>
           <button type="button" class="icon" id="diffToggle" title="Ver cambios respecto al último commit" aria-pressed="false"><i class="codicon codicon-git-compare"></i></button>
           <button type="button" class="icon" id="saveFile" title="Guardar (⌘S / Ctrl+S)" disabled><i class="codicon codicon-save"></i></button>
           <button type="button" class="icon" id="follow" title="Seguir: mostrar el archivo que está editando el agente" aria-pressed="true"><i class="codicon codicon-eye"></i></button>
@@ -308,6 +311,7 @@
       <div id="editorHost">
         <div id="editor"></div>
         <div id="diffEditor" hidden></div>
+        <iframe id="htmlPreview" sandbox="allow-scripts" title="Vista previa" hidden></iframe>
         <p id="fileNotice" class="muted pad">Aquí verás el archivo que se está editando. También puedes abrir uno desde Worktree.</p>
       </div>
     </div>
@@ -1083,6 +1087,11 @@
     decorations = editor.createDecorationsCollection();
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveCurrent);
     editor.onDidChangeModelContent(updateDirty);
+    let previewTimer; // retardo para no volver a pintar la vista previa en cada pulsación
+    editor.onDidChangeModelContent(() => { // con cambios sin guardar, refresca la vista previa en vivo
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(renderPreview, 300);
+    });
     diffEditor = monaco.editor.createDiffEditor($('diffEditor'), { ...common, originalEditable: false, useInlineViewWhenSpaceIsLimited: true, renderSideBySideInlineBreakpoint: 700 });
     diffEditor.getModifiedEditor().addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveCurrent);
     renderTree(); // los iconos (codicons) ya están cargados
@@ -1124,6 +1133,28 @@
     $('fileStats').innerHTML = parts.join(' ');
   }
 
+  // ¿Es un archivo HTML (.html/.htm)?
+  const isHtml = (p) => /\.html?$/i.test(p || '');
+  // ¿Está visible la vista previa del HTML?
+  function previewOn() { return !$('htmlPreview').hidden; }
+  // Vuelca el contenido actual del editor (con cambios sin guardar) en la vista previa.
+  function renderPreview() {
+    if (previewOn() && editor && editor.getModel()) $('htmlPreview').srcdoc = editor.getModel().getValue();
+  }
+  // Muestra u oculta la vista previa del HTML (solo en archivos .html) y deja el diff en un estado coherente.
+  async function setPreview(on) {
+    on = on && isHtml(currentFile);
+    if (pressed('diffToggle')) { // si el diff está activo, desactívalo con la misma lógica que usa su botón
+      $('diffToggle').setAttribute('aria-pressed', 'false');
+      showDiff(await monacoReady);
+    }
+    $('htmlPreview').hidden = !on;
+    $('editor').hidden = on;
+    $('previewToggle').setAttribute('aria-pressed', String(on));
+    if (on) renderPreview(); // pinta la maqueta
+    else editor.layout(); // Monaco recalcula su tamaño al volver a mostrar el editor
+  }
+
   // Abre (o refresca) un archivo en el editor.
   //   switchTab: cambiar a la pestaña Archivo · refresh: recarga del mismo archivo tras un cambio en disco
   async function openFile(path, { switchTab = false, refresh = false, force = false } = {}) {
@@ -1141,12 +1172,16 @@
     try {
       view = await invoke('read_file', { path });
     } catch (err) {
+      setPreview(false); // con aviso no hay contenido que previsualizar
+      $('previewToggle').hidden = true;
       return showNotice(String(err));
     }
     if (currentFile !== path) return; // se abrió otro mientras tanto
     if (view.content == null) {
       $('fileStats').textContent = '';
       $('saveFile').disabled = true;
+      setPreview(false); // con aviso no hay contenido que previsualizar
+      $('previewToggle').hidden = true;
       return showNotice(view.notice);
     }
     $('fileNotice').hidden = true;
@@ -1180,6 +1215,9 @@
     const first = [...view.modified, ...view.added].sort((a, b) => a - b)[0];
     if (changedFile && !refresh && !info.viewState && first) editor.revealLineInCenter(first);
     else if (refresh && sending && pressed('follow') && first) editor.revealLineInCenterIfOutsideViewport(Math.max(...view.added, ...view.modified));
+    $('previewToggle').hidden = !isHtml(path); // solo los HTML tienen botón de vista previa
+    if (changedFile) setPreview(isHtml(path) && path.startsWith('docs/maquetas/')); // las maquetas se abren con vista previa
+    else renderPreview(); // al recargar el mismo archivo, refresca la vista previa
   }
 
   async function showDiff(monaco) {
@@ -1195,7 +1233,8 @@
     if (old?.original) old.original.dispose();
   }
 
-  $('diffToggle').addEventListener('click', async () => { togglePressed('diffToggle'); showDiff(await monacoReady); });
+  $('diffToggle').addEventListener('click', async () => { if (previewOn()) await setPreview(false); togglePressed('diffToggle'); showDiff(await monacoReady); }); // el diff y la vista previa se excluyen
+  $('previewToggle').addEventListener('click', () => setPreview(!previewOn()));
   $('follow').addEventListener('click', () => togglePressed('follow'));
   $('saveFile').addEventListener('click', saveCurrent);
   $('reloadFromDisk').addEventListener('click', () => currentFile && openFile(currentFile, { refresh: true, force: true }));
