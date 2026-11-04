@@ -188,15 +188,16 @@ Una maqueta es una página HTML de ejemplo que genera un agente, para ver cómo 
 
 - `/maqueta tema` en el chat pide al agente elegido una maqueta HTML en `docs/maquetas/<tema>.html`: un único archivo autocontenido, sin recursos externos.
 - En un consejo aprobado, el botón «Maquetar esta decisión» la pide basándose en el documento aprobado.
-- En la pestaña **Archivo**, los `.html` tienen un botón de vista previa. Los de `docs/maquetas/` se abren ya en vista previa. Se refresca sola cuando el agente edita el archivo y también con los cambios sin guardar.
+- En la pestaña **Archivos**, los `.html` tienen un botón de vista previa. Los de `docs/maquetas/` se abren ya en vista previa. Se refresca sola cuando el agente edita el archivo y también con los cambios sin guardar.
 - La maqueta se muestra aislada (iframe con sandbox): puede ejecutar su JavaScript, pero no acceder a la app ni a tus archivos.
 
 ## Panel de archivos (como VS Code)
 
-A la derecha hay un panel con tres pestañas: Worktree, Archivo y Consejo (ver arriba). Se oculta desde **☰ → Vista** y se ensancha arrastrando su borde.
+A la derecha hay un panel con las pestañas principales **Archivos** y **Consejo** (ver arriba). Se oculta desde **☰ → Vista** y se ensancha arrastrando su borde.
 
-- **Worktree**: el explorador del proyecto, con los colores y letras de git de VS Code (**M** modificado, **U** sin seguimiento, **A** añadido, **D** borrado) y la rama actual. Respeta `.gitignore`. El botón de filtro muestra solo los archivos con cambios.
-- **Archivo**: el editor de VS Code (Monaco). Tiene resaltado de sintaxis, minimapa y búsqueda (⌘F / Ctrl+F), y se puede editar y guardar (⌘S / Ctrl+S). En el margen, barras como las de VS Code: verde para líneas añadidas, azul para modificadas y un triángulo rojo donde se borró algo. El botón de comparar abre la vista de cambios respecto al último commit. Los `.html` se pueden ver como página (ver «Maquetas»).
+- **Archivos**: árbol a la izquierda y editor a la derecha; al pulsar un archivo se abre sin cambiar de pestaña; el borde entre los dos se arrastra y el botón de la barra del editor oculta el árbol (se recuerda).
+  - **Árbol**: el explorador del proyecto, con los colores y letras de git de VS Code (**M** modificado, **U** sin seguimiento, **A** añadido, **D** borrado) y la rama actual. Respeta `.gitignore`. El botón de filtro muestra solo los archivos con cambios.
+  - **Editor**: el editor de VS Code (Monaco). Tiene resaltado de sintaxis, minimapa y búsqueda (⌘F / Ctrl+F), y se puede editar y guardar (⌘S / Ctrl+S). En el margen, barras como las de VS Code: verde para líneas añadidas, azul para modificadas y un triángulo rojo donde se borró algo. El botón de comparar abre la vista de cambios respecto al último commit. Los `.html` se pueden ver como página (ver «Maquetas»).
 
 Mientras un agente trabaja, el panel muestra el archivo que está editando (botón del ojo, «Seguir»). Si cambia el archivo abierto, se recarga sin perder la posición; si tenías cambios sin guardar, avisa en lugar de sobrescribirlos.
 
