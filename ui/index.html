@@ -843,7 +843,11 @@
     const bubble = agentBubble(agent.name, true);
     liveRequest = { id: crypto.randomUUID(), bubble };
     try {
-      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message, workflow: $('workflow').value || null, account: $('account').value || 'auto' });
+      // Pizarra abierta ahora (si la pestaña Pizarra está visible): el agente puede leerla.
+      const boardOpen = pizarra && !$('boardView').hidden && pizarra.kind !== 'council' ? pizarra : null;
+      const boardId = boardOpen ? (boardOpen.kind === 'diagram' ? boardOpen.id : 'proyecto') : null;
+      const boardTitle = boardOpen ? ($('boardSelect').selectedOptions[0]?.textContent || '').replace(/^[^\p{L}\p{N}]+/u, '').trim() : null;
+      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message, workflow: $('workflow').value || null, account: $('account').value || 'auto', boardId, boardTitle });
       conversationId = reply.conversationId;
       store.set(convKey(), conversationId);
       // Si la CLI no dio pasos de texto, se muestra la respuesta final
