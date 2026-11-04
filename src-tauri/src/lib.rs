@@ -472,6 +472,33 @@ fn project_board_save(current: State<'_, CurrentProject>, board: serde_json::Val
     project::board_save(&current.get()?, &board)
 }
 
+/// Diagramas del proyecto (una pizarra por diagrama), del más nuevo al más antiguo.
+#[tauri::command]
+fn diagrams_list(current: State<'_, CurrentProject>) -> Vec<project::Diagram> {
+    current.get().map(|d| project::diagrams_list(&panes::repo_root(&d))).unwrap_or_default()
+}
+
+#[tauri::command]
+fn diagram_get(current: State<'_, CurrentProject>, id: String) -> Result<Option<serde_json::Value>, String> {
+    Ok(project::diagram_get(&panes::repo_root(&current.get()?), &id))
+}
+
+#[tauri::command]
+fn diagram_save(current: State<'_, CurrentProject>, id: String, board: serde_json::Value) -> Result<(), String> {
+    project::diagram_save(&panes::repo_root(&current.get()?), &id, &board)
+}
+
+/// Desde el chat: un bloque ```mermaid de una respuesta se convierte en su pizarra.
+#[tauri::command]
+fn diagram_create(current: State<'_, CurrentProject>, title: String, format: String, source: String) -> Result<project::Diagram, String> {
+    project::diagram_create(&panes::repo_root(&current.get()?), &title, &format, &source)
+}
+
+#[tauri::command]
+fn diagram_delete(current: State<'_, CurrentProject>, id: String) -> Result<(), String> {
+    project::diagram_delete(&panes::repo_root(&current.get()?), &id)
+}
+
 #[tauri::command]
 fn list_conversations(current: State<'_, CurrentProject>) -> Vec<store::Summary> {
     current.key().map(|k| store::list(&k)).unwrap_or_default()
@@ -674,6 +701,11 @@ pub fn run() {
             council_board_save,
             project_board_get,
             project_board_save,
+            diagrams_list,
+            diagram_get,
+            diagram_save,
+            diagram_create,
+            diagram_delete,
             list_conversations,
             get_conversation,
             term_start,

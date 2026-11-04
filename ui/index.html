@@ -205,6 +205,9 @@
   #councilBody { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
   #councilBody[hidden] { display: none; }
   #boardCanvas { flex: 1; min-height: 0; position: relative; }
+  #boardSelect { max-width: 60%; font-size: 13px; padding: 3px 28px 3px 8px; }
+  #boardSource { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 12px; }
+  .md .md-code-head .md-board { color: var(--me); }
   #councilSelect { flex: 1; min-width: 0; }
   .c-head { padding: 12px 14px 8px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
   .c-topic { font-weight: 700; font-size: 15px; }
@@ -502,8 +505,9 @@
     </div>
     <div id="boardView" class="view" hidden>
       <div class="toolbar">
-        <span class="section-title">Pizarra</span>
+        <select id="boardSelect" aria-label="Pizarra"></select>
         <span id="boardSource" class="muted"></span>
+        <span class="actions" style="margin-left:auto"><button type="button" class="icon" id="boardDelete" title="Borrar este diagrama" hidden><i class="codicon codicon-trash"></i></button></span>
         <span class="actions">
           <button type="button" class="icon" id="widenBoard" title="Ampliar (oculta el chat)" aria-pressed="false"><i class="codicon codicon-screen-full"></i></button>
         </span>
@@ -817,6 +821,15 @@
       // Si la CLI no dio pasos de texto, se muestra la respuesta final
       if (!bubble.el.querySelector('.step-text')) bubble.steps.appendChild(textEl(reply.message.text || '(sin respuesta)'));
       loadConversationList();
+      // Diagramas Mermaid en la respuesta: cada uno a su pizarra; se muestra el último.
+      const blocks = mermaidBlocks(reply.message.text);
+      if (blocks.length) {
+        (async () => {
+          let last = null;
+          for (const b of blocks) last = await invoke('diagram_create', { title: b.title, format: 'mermaid', source: b.source }).catch(() => last);
+          if (last) showDiagram(last.id);
+        })();
+      }
     } catch (err) {
       bubble.el.classList.add('error');
       bubble.steps.appendChild(Object.assign(document.createElement('div'), {
@@ -848,7 +861,8 @@
       html: ({ text }) => escapeHtml(text),
       code({ text, lang }) {
         const l = (lang || '').trim().split(/\s+/)[0];
-        return `<div class="md-code"><div class="md-code-head"><span>${escapeHtml(l)}</span><button type="button" class="md-copy">Copiar</button></div><pre><code data-lang="${escapeHtml(l)}">${escapeHtml(text)}</code></pre></div>`;
+        const board = l.toLowerCase() === 'mermaid' ? '<button type="button" class="md-board">Ver en pizarra</button>' : '';
+        return `<div class="md-code"><div class="md-code-head"><span>${escapeHtml(l)}</span><span>${board}<button type="button" class="md-copy">Copiar</button></span></div><pre><code data-lang="${escapeHtml(l)}">${escapeHtml(text)}</code></pre></div>`;
       },
       table(token) {
         return `<div class="md-table">${marked.Renderer.prototype.table.call(this, token)}</div>`;
@@ -885,6 +899,12 @@
 
   // Enlaces de las respuestas: web → navegador; ruta del proyecto → panel de archivos. Nunca se navega dentro de la app.
   $('messages').addEventListener('click', (e) => {
+    const toBoard = e.target.closest('.md-board');
+    if (toBoard) {
+      const source = toBoard.closest('.md-code').querySelector('code').textContent;
+      sendToBoard({ title: 'Diagrama', source }).catch((err) => addMessage('assistant', String(err), 'Pizarra', true));
+      return;
+    }
     const copy = e.target.closest('.md-copy');
     if (copy) {
       const code = copy.closest('.md-code').querySelector('code').textContent;
@@ -1737,7 +1757,10 @@
     }
     pizarra.lastVersion = boardVersion(els);
     const board = PizarraEscena.boardToSave(els, pizarra.appState);
-    (pizarra.council ? invoke('council_board_save', { id: pizarra.id, board }) : invoke('project_board_save', { board })).catch((err) => councilError(err));
+    const save = pizarra.kind === 'council' ? invoke('council_board_save', { id: pizarra.id, board })
+      : pizarra.kind === 'diagram' ? invoke('diagram_save', { id: pizarra.id, board: { ...board, files: pizarra.handle.getFiles() } })
+      : invoke('project_board_save', { board });
+    save.catch((err) => councilError(err));
   }
 
   // Cierra la pizarra del consejo guardando lo pendiente y liberando su vista.
@@ -1749,36 +1772,128 @@
     pizarra = null;
   }
 
-  // Abre la pizarra de la pestaña Pizarra: la del consejo abierto (con sus tarjetas) o, sin consejo, la libre del proyecto.
+  // ----- Pestaña Pizarra: la libre del proyecto, la del consejo abierto o una por diagrama -----
+  let diagrams = [];
+  const boardKey = () => `board:${project?.path || ''}`;
+  // Pizarra elegida: 'free', 'council' o 'd:<id>' (se valida en fillBoardSelect, con la lista recién leída).
+  function currentBoardChoice() {
+    return $('boardSelect').value || store.get(boardKey()) || '';
+  }
+  async function fillBoardSelect(choice) {
+    diagrams = project ? await invoke('diagrams_list').catch(() => []) : [];
+    const sel = $('boardSelect');
+    sel.innerHTML = '';
+    sel.appendChild(el('option', { value: 'free', textContent: 'Pizarra libre' }));
+    if (council) sel.appendChild(el('option', { value: 'council', textContent: `Consejo · ${council.topic}` }));
+    for (const d of diagrams) {
+      const when = d.createdAt ? new Date(d.createdAt).toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+      sel.appendChild(el('option', { value: `d:${d.id}`, textContent: `◇ ${d.title}${when ? ` · ${when}` : ''}` }));
+    }
+    sel.value = choice;
+    // Lo elegido ya no existe (diagrama borrado, consejo cerrado): la del consejo o la libre.
+    if (!choice || sel.value !== choice) sel.value = council ? 'council' : 'free';
+  }
+
+  // Convierte el código de un diagrama en elementos (la primera vez que se abre).
+  async function diagramScene(d) {
+    if (d.elements) return { elements: d.elements, appState: d.appState, files: d.files || {} };
+    if (d.format === 'excalidraw') {
+      const parsed = JSON.parse(d.source);
+      const skeletons = Array.isArray(parsed) ? parsed : parsed.elements || [];
+      return { elements: Pizarra.convert(skeletons), files: {} };
+    }
+    return Pizarra.fromMermaid(d.source);
+  }
+
   async function openBoard() {
     try {
       if ($('boardView').hidden || !project) { closeBoard(); return; }
-      const id = council ? council.id : `proyecto:${project.path}`;
-      $('boardSource').textContent = council ? `· consejo «${council.topic}»` : '· libre del proyecto (abre un consejo para ver sus tarjetas)';
+      await fillBoardSelect(currentBoardChoice());
+      const choice = $('boardSelect').value;
+      const kind = choice === 'council' ? 'council' : choice.startsWith('d:') ? 'diagram' : 'free';
+      const id = kind === 'council' ? council.id : kind === 'diagram' ? choice.slice(2) : `proyecto:${project.path}`;
+      $('boardDelete').hidden = kind !== 'diagram';
+      $('boardSource').textContent = kind === 'free' ? 'tu pizarra del proyecto' : kind === 'council' ? 'tarjetas del consejo' : '';
       if (pizarra && pizarra.id === id) { syncBoard(); return; }
       closeBoard();
       const turno = ++pizarraTurno; // turno de esta apertura: captura tras el closeBoard de arriba, que también sube el turno
       const vigente = () => turno === pizarraTurno && !$('boardView').hidden;
       await loadPizarra();
       if (!vigente()) return;
-      const saved = council ? await invoke('council_board_get', { id }) : await invoke('project_board_get');
+      let saved;
+      let fresh = false; // diagrama convertido ahora: hay que guardarlo
+      if (kind === 'council') saved = await invoke('council_board_get', { id });
+      else if (kind === 'free') saved = await invoke('project_board_get');
+      else {
+        const d = await invoke('diagram_get', { id });
+        if (!d) throw new Error('Diagrama no encontrado');
+        await Pizarra.fontsReady();
+        try {
+          saved = await diagramScene(d);
+          fresh = !d.elements;
+        } catch (err) {
+          $('boardSource').textContent = `No se pudo convertir el diagrama: ${err.message || err}`;
+          saved = { elements: [] };
+        }
+      }
       if (!vigente()) return;
       // habiaVista recuerda si había appState guardado: solo encuadra al abrir cuando no hay vista propia.
-      const habiaVista = !!(saved && saved.appState);
+      const habiaVista = !!(saved && saved.appState && saved.appState.zoom);
       const existing = (saved && saved.elements) || [];
-      const handle = Pizarra.mount($('boardCanvas'), { elements: existing, appState: saved && saved.appState }, {
+      const handle = Pizarra.mount($('boardCanvas'), { elements: existing, appState: saved && saved.appState, files: saved && saved.files }, {
         theme: dark.matches ? 'dark' : 'light',
         onChange: (els, appState) => {
           if (pizarra) { pizarra.appState = appState; saveBoard(false); }
         },
       });
-      pizarra = { id, council: !!council, handle, timer: null, lastVersion: boardVersion(existing), appState: (saved && saved.appState) || null };
+      pizarra = { id, kind, council: kind === 'council', handle, timer: null, lastVersion: fresh ? -1 : boardVersion(existing), appState: (saved && saved.appState) || null };
       await Pizarra.fontsReady();
       if (!vigente()) return;
       syncBoard();
-      // Encuadra las tarjetas la primera vez: si el usuario ya tenía su vista guardada, se respeta.
-      if (!habiaVista && existing.length + (council?.members?.length || 0) > 0) pizarra.handle.scrollToContent();
+      if (fresh) setTimeout(() => saveBoard(true), 300);
+      // Encuadra el contenido la primera vez: si el usuario ya tenía su vista guardada, se respeta.
+      if (!habiaVista) setTimeout(() => pizarra?.handle.scrollToContent(), 50);
     } catch (err) { councilError(err); }
+  }
+
+  $('boardSelect').addEventListener('change', () => { store.set(boardKey(), $('boardSelect').value); openBoard(); });
+  $('boardDelete').addEventListener('click', async () => {
+    const v = $('boardSelect').value;
+    if (!v.startsWith('d:')) return;
+    const d = diagrams.find((x) => `d:${x.id}` === v);
+    if (!(await window.__TAURI__.dialog.ask(`¿Borrar el diagrama «${d?.title || ''}»?`, { title: 'Borrar diagrama', kind: 'warning' }))) return;
+    closeBoard();
+    await invoke('diagram_delete', { id: v.slice(2) }).catch(councilError);
+    store.set(boardKey(), council ? 'council' : 'free');
+    $('boardSelect').value = '';
+    openBoard();
+  });
+
+  // Muestra un diagrama: panel derecho visible, pestaña Pizarra y ese diagrama.
+  function showDiagram(id) {
+    if (store.get('panel') === 'off') { store.set('panel', 'on'); applyPanel(); }
+    store.set(boardKey(), `d:${id}`);
+    $('boardSelect').value = '';
+    if ($('boardView').hidden) setTab('board'); else { closeBoard(); openBoard(); }
+  }
+  // `agentes pizarra` desde cualquier agente lanzado por la app.
+  listen('board-add', async (e) => {
+    if (!project) return;
+    const list = await invoke('diagrams_list').catch(() => []);
+    if (list.some((d) => d.id === e.payload.id)) showDiagram(e.payload.id);
+  });
+  // Bloques ```mermaid de las respuestas: a su pizarra.
+  const MERMAID_RE = /```mermaid[^\n]*\n([\s\S]*?)```/g;
+  function mermaidBlocks(text) {
+    return [...(text || '').matchAll(MERMAID_RE)].map((m) => {
+      const before = text.slice(0, m.index).split('\n').reverse().find((l) => /^#{1,4}\s|^\*\*.+\*\*\s*:?$/.test(l.trim()));
+      const title = (before || '').replace(/^#+\s*|\*\*/g, '').replace(/:$/, '').trim() || 'Diagrama';
+      return { title, source: m[1].trim() };
+    }).filter((b) => b.source);
+  }
+  async function sendToBoard(block) {
+    const d = await invoke('diagram_create', { title: block.title, format: 'mermaid', source: block.source });
+    showDiagram(d.id);
   }
 
   // Añade a la pizarra abierta las tarjetas del consejo que aún no estén en ella.

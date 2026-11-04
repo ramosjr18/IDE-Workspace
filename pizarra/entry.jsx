@@ -7,12 +7,21 @@ import { createRoot } from "react-dom/client";
 // Componente de la pizarra del consejo (IDE-4) y su CSS (lleva las @font-face).
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
+// Mermaid → Excalidraw (diagramas que dibujan los agentes desde el chat).
+import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 
 // Pizarra: fachada única para montar la vista del tablero del consejo.
 window.Pizarra = {
   // convert convierte esqueletos en elementos de Excalidraw, conservando sus ids (regenerateIds: false).
   convert(skeletons) {
     return convertToExcalidrawElements(skeletons, { regenerateIds: false });
+  },
+  // fromMermaid convierte código Mermaid en elementos (formas editables en flujo, secuencia y clases; imagen en el resto).
+  async fromMermaid(code) {
+    // El conversor deja «<br/>» como texto literal en las etiquetas: se cambia por un espacio.
+    code = String(code).replace(/<br\s*\/?>/gi, " ");
+    const { elements, files } = await parseMermaidToExcalidraw(code, { themeVariables: { fontSize: "16px" } });
+    return { elements: convertToExcalidrawElements(elements), files: files || {} };
   },
   // fontsReady espera a que Excalidraw registre Excalifont en document.fonts (lo hace al montarse, no al cargar el bundle): sin ella convert mide el texto con una reserva y las tarjetas se cortan.
   async fontsReady() {
@@ -41,6 +50,7 @@ window.Pizarra = {
         initialData: {
           elements: scene.elements || [],
           appState: { ...(scene.appState || {}), theme },
+          files: scene.files || {},
         },
         theme: theme,
         onChange: (elements, appState) =>
@@ -55,6 +65,10 @@ window.Pizarra = {
       // update repinta la escena con los elementos dados.
       update(elements) {
         if (apiRef) apiRef.updateScene({ elements });
+      },
+      // getFiles devuelve las imágenes de la escena (diagramas Mermaid que no son formas).
+      getFiles() {
+        return apiRef ? apiRef.getFiles() : {};
       },
       // getElements devuelve los elementos actuales de la escena, incluidos los borrados.
       getElements() {

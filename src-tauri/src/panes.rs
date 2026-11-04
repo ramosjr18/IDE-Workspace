@@ -490,6 +490,15 @@ enum Request {
     Kill {
         id: u32,
     },
+    /// `agentes pizarra`: un diagrama (Mermaid o esqueletos de Excalidraw) a su pizarra.
+    Board {
+        cwd: String,
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        format: String,
+        text: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -509,6 +518,8 @@ struct Reply {
     pane: Option<Pane>,
     #[serde(skip_serializing_if = "Option::is_none")]
     panes: Option<Vec<Pane>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    board: Option<String>,
 }
 
 fn err(e: impl Into<String>) -> Reply {
@@ -548,6 +559,17 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
             Some(p) => Reply { ok: true, pane: Some(p), ..Default::default() },
             None => err(format!("No hay ningún panel {id}")),
         },
+        Request::Board { cwd, title, format, text } => {
+            let root = repo_root(Path::new(&cwd));
+            let format = if format.is_empty() { "mermaid".to_string() } else { format };
+            match crate::project::diagram_create(&root, &title, &format, &text) {
+                Ok(d) => {
+                    let _ = app.emit("board-add", serde_json::json!({ "project": root.to_string_lossy(), "id": d.id, "title": d.title }));
+                    Reply { ok: true, error: None, pane: None, panes: None, board: Some(d.id) }
+                }
+                Err(e) => err(e),
+            }
+        }
         Request::Kill { id } => {
             panes.stop(&app.state::<Terminals>(), id);
             Reply { ok: true, pane: panes.get(id), ..Default::default() }
@@ -636,6 +658,8 @@ Uso:
   agentes status            paneles de este proyecto (id, estado, worktree, log)
   agentes wait <id>         espera a que termine el panel y sale con su código
   agentes kill <id>         detiene el panel
+  agentes pizarra [--title <título>] [--format mermaid|excalidraw] [archivo|-]
+                            muestra un diagrama en la pizarra del usuario (su propia pizarra)
 
 --worktree crea (o reutiliza) .claude/worktrees/<nombre> en una rama nueva desde HEAD
 (agentes/<nombre> si no se indica --branch) y ejecuta la CLI ahí.
@@ -690,6 +714,8 @@ struct Reply2 {
     error: Option<String>,
     pane: Option<PaneOut>,
     panes: Option<Vec<PaneOut>>,
+    #[serde(default)]
+    board: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -817,6 +843,38 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
             for p in list {
                 print_pane(&p.into());
             }
+            Ok(0)
+        }
+        "pizarra" => {
+            let mut title = String::new();
+            let mut format = "mermaid".to_string();
+            let mut file: Option<String> = None;
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--title" => title = it.next().ok_or("Falta el valor de --title")?,
+                    "--format" => format = it.next().ok_or("Falta el valor de --format")?,
+                    "-h" | "--help" => {
+                        println!("{HELP}");
+                        return Ok(0);
+                    }
+                    "-" => file = None,
+                    f => file = Some(f.to_string()),
+                }
+            }
+            let text = match file {
+                Some(f) => std::fs::read_to_string(&f).map_err(|e| format!("No se pudo leer {f}: {e}"))?,
+                None => {
+                    use std::io::{IsTerminal, Read};
+                    if std::io::stdin().is_terminal() {
+                        return Err("Pasa el diagrama en un archivo o por la entrada estándar".into());
+                    }
+                    let mut s = String::new();
+                    std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
+                    s
+                }
+            };
+            let r = request(serde_json::json!({ "cmd": "board", "cwd": cwd, "title": title, "format": format, "text": text }))?;
+            println!("Diagrama en la pizarra del usuario (id {}).", r.board.unwrap_or_default());
             Ok(0)
         }
         "wait" | "kill" => {

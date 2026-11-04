@@ -116,7 +116,11 @@ Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
 
 ### Vista de pizarra
 
-- La pizarra (Excalidraw) tiene su propia pestaña, **Pizarra**, en el panel derecho. Con un consejo abierto muestra su tablero, con las tarjetas de los participantes; sin consejo, una pizarra libre del proyecto, que se guarda aparte. Se puede ampliar a toda la ventana.
+- La pizarra (Excalidraw) tiene su propia pestaña, **Pizarra**, en el panel derecho, con un selector arriba:
+  - **Pizarra libre:** la tuya, una por proyecto.
+  - **Consejo:** el tablero del consejo abierto, con las tarjetas de los participantes.
+  - **Diagramas:** uno por pizarra, del más nuevo al más antiguo, con un botón para borrarlos.
+- **Cualquier agente puede dibujar.** Pídele un diagrama, un esquema o un plan visual: lo escribe en Mermaid y lo manda con `agentes pizarra`. Cualquier bloque ` ```mermaid ` de una respuesta también llega, aunque la CLI no use el comando, y en el chat lleva el botón **Ver en pizarra**. El panel derecho cambia solo a la pestaña Pizarra y abre el diagrama. Los diagramas de flujo, de secuencia y de clases se convierten en formas editables; el resto de tipos entra como imagen.
 - Cada tarjeta es un rectángulo coloreado por tipo (propuesta, riesgo, apoyo, objeción, pregunta, comentario), con columnas por agente, y las respuestas se unen con flechas.
 - Se pueden mover, agrupar, conectar y dibujar libremente. Se guarda solo, por consejo.
 - Las tarjetas nuevas aparecen en la pizarra mientras el consejo trabaja, sin mover lo que ya se ha colocado. Si borras una tarjeta de la pizarra, no vuelve a aparecer (en las columnas sigue estando).
