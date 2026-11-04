@@ -269,7 +269,7 @@ fn council_start(
     judge_max_rounds: u32,
 ) -> Result<council::Council, String> {
     let members = members.into_iter().map(|m| council::NewMember { agent: m.agent, role: m.role }).collect();
-    let judge = council::Judge { enabled: judge_enabled, pool: judge_pool, max_rounds: judge_max_rounds.min(5), used_rounds: 0 };
+    let judge = council::Judge { enabled: judge_enabled, pool: judge_pool, max_rounds: judge_max_rounds.min(3), used_rounds: 0 };
     let c = council::create(&current.get(), conversation_id, topic, output, context, members, moderator, judge)?;
     council::launch(app, runs.inner().clone(), c.clone(), council::Plan::Full)?;
     Ok(c)

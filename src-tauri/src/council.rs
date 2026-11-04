@@ -378,6 +378,9 @@ pub fn judge_candidates(c: &Council, seed: u64) -> Vec<&'static Agent> {
 fn extract_json(text: &str) -> Option<Value> {
     let start = text.find('{')?;
     let end = text.rfind('}')?;
+    if end < start {
+        return None;
+    }
     serde_json::from_str(&text[start..=end]).ok()
 }
 
@@ -826,6 +829,12 @@ mod tests {
     fn tarjetas_sin_json() {
         let cards = parse_cards("Propongo usar /v1 en la URL.", "propuesta", &[]);
         assert_eq!(cards, vec![("propuesta".into(), None, "Propongo usar /v1 en la URL.".into())]);
+    }
+
+    #[test]
+    fn extract_json_llaves_invertidas() {
+        assert_eq!(extract_json("Nota: } ver abajo {"), None);
+        assert!(extract_json("texto {\"a\": 1} fin").is_some());
     }
 
     #[test]
