@@ -156,6 +156,46 @@ pub fn save(c: &mut Council) -> Result<(), String> {
     write_atomic(&dir().join(format!("{}.json", c.id)), &json)
 }
 
+/// Pizarra (Excalidraw) del tablero del consejo: aparte del Council porque, mientras el consejo
+/// está en marcha, la tarea en segundo plano sobrescribe su copia del Council con cada cambio.
+fn boards_dir(base: &Path) -> PathBuf {
+    let d = base.join("boards");
+    let _ = fs::create_dir_all(&d);
+    d
+}
+
+fn read_board(base: &Path, id: &str) -> Option<Value> {
+    if !valid_id(id) {
+        return None;
+    }
+    fs::read_to_string(boards_dir(base).join(format!("{id}.json")))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn write_board(base: &Path, id: &str, board: &Value) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err("Consejo no válido".into());
+    }
+    if !board.is_object() {
+        return Err("La pizarra debe ser un objeto JSON".into());
+    }
+    let json = serde_json::to_string(board).map_err(|e| e.to_string())?;
+    if json.len() > 5_000_000 {
+        return Err("La pizarra es demasiado grande".into());
+    }
+    write_atomic(&boards_dir(base).join(format!("{id}.json")), &json)
+}
+
+pub fn board_get(id: &str) -> Option<Value> {
+    read_board(&dir(), id)
+}
+
+pub fn board_save(id: &str, board: &Value) -> Result<(), String> {
+    get(id).ok_or("Consejo no encontrado")?;
+    write_board(&dir(), id, board)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
@@ -901,6 +941,44 @@ mod tests {
         let rel = write_document(&c, "# ADR").unwrap();
         assert_eq!(rel, "docs/adr/0004-politica-de-versionado-de-la-api.md");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pizarra_guardar_y_leer() {
+        let base = std::env::temp_dir().join(format!("pizarra-test-{}-guardar_y_leer", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let board = serde_json::json!({"type": "excalidraw", "elements": [{"id": "e1"}]});
+        write_board(&base, "00000000-0000-0000-0000-000000000000", &board).unwrap();
+        assert_eq!(read_board(&base, "00000000-0000-0000-0000-000000000000").unwrap(), board);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pizarra_leer_id_inexistente() {
+        let base = std::env::temp_dir().join(format!("pizarra-test-{}-inexistente", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        assert_eq!(read_board(&base, "00000000-0000-0000-0000-000000000000"), None);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pizarra_id_invalido() {
+        let base = std::env::temp_dir().join(format!("pizarra-test-{}-id_invalido", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        assert_eq!(write_board(&base, "../x", &serde_json::json!({"a": 1})).unwrap_err(), "Consejo no válido");
+        assert_eq!(read_board(&base, "../x"), None);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pizarra_debe_ser_objeto() {
+        let base = std::env::temp_dir().join(format!("pizarra-test-{}-no_objeto", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        assert_eq!(
+            write_board(&base, "00000000-0000-0000-0000-000000000000", &serde_json::json!([1, 2])).unwrap_err(),
+            "La pizarra debe ser un objeto JSON"
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 }
 

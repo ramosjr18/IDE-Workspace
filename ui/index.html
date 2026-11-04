@@ -100,6 +100,9 @@
   .verdict .muted { font-size: 12px; }
   .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
   #councilBody { flex: 1; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
+  #councilBody[hidden] { display: none; }
+  #councilCanvas { flex: 1; min-height: 0; position: relative; }
+  #councilCanvas[hidden] { display: none; }
   #councilSelect { flex: 1; min-width: 0; }
   .c-head { padding: 12px 14px 8px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
   .c-topic { font-weight: 700; font-size: 15px; }
@@ -316,10 +319,12 @@
         <select id="councilSelect" aria-label="Consejos de este proyecto"></select>
         <span class="actions">
           <button type="button" class="icon" id="newCouncil" title="Nuevo consejo"><i class="codicon codicon-add"></i></button>
+          <button type="button" class="icon" id="councilMode" title="Ver como pizarra" aria-pressed="false"><i class="codicon codicon-edit"></i></button>
           <button type="button" class="icon" id="widenCouncil" title="Ampliar el tablero (oculta el chat)" aria-pressed="false"><i class="codicon codicon-screen-full"></i></button>
         </span>
       </div>
       <div id="councilBody"></div>
+      <div id="councilCanvas" hidden></div>
     </div>
   </aside>
 </main>
@@ -1235,10 +1240,116 @@
   let council = null; // consejo abierto en el tablero
   const councilActivity = {}; // agente → lo que está haciendo ahora
   let councilReplyTo = null;
+  let councilMode = store.get('councilMode') === 'pizarra' ? 'pizarra' : 'columnas';
+  let pizarra = null; // { id, handle, timer, lastVersion }
+  let pizarraTurno = 0; // turno de apertura: se incrementa en cada open/close para descartar montajes obsoletos
+  let pizarraCargando = null; // promesa de carga del bundle de pizarra, para no repetirla
   const COLORS = ['#c8643b', '#3d6fc4', '#8a57c2', '#2f9a8a', '#b08a1e', '#c24f7f'];
   const RUNNING = ['diverge', 'contrast', 'converge', 'judge'];
   const KIND = { propuesta: 'Propuesta', riesgo: 'Riesgo', apoyo: 'Apoyo', objecion: 'Objeción', pregunta: 'Pregunta', comentario: 'Comentario' };
   const el = (tag, props = {}, ...children) => { const n = Object.assign(document.createElement(tag), props); n.append(...children.filter((c) => c != null)); return n; };
+
+  // Carga diferida del bundle de pizarra (8 MB): inserta su CSS y sus scripts una sola vez y promete que cargan.
+  function loadPizarra() {
+    if (pizarraCargando) return pizarraCargando;
+    pizarraCargando = new Promise((resolve, reject) => {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'vendor/pizarra/pizarra.css';
+      const bundle = document.createElement('script');
+      bundle.src = 'vendor/pizarra/pizarra.js';
+      const escena = document.createElement('script');
+      escena.src = 'pizarra-escena.js';
+      let quedan = 2;
+      const cargado = () => { if (--quedan === 0) resolve(); };
+      // Si falla libera la promesa para que se pueda reintentar.
+      const fallado = () => { pizarraCargando = null; reject(new Error('No se pudo cargar el bundle de pizarra')); };
+      for (const s of [bundle, escena]) {
+        s.addEventListener('load', cargado);
+        s.addEventListener('error', fallado);
+      }
+      document.head.append(link, bundle, escena);
+    });
+    return pizarraCargando;
+  }
+
+  // Suma las versiones de los elementos para saber si cambió algo de verdad en la pizarra.
+  function boardVersion(elements) {
+    return (elements || []).reduce((n, e) => n + (e.version || 0), 0);
+  }
+
+  // Guarda la pizarra del consejo abierto si cambió algo: al momento o con retardo de 800 ms.
+  function saveBoard(now) {
+    if (!pizarra) return;
+    if (pizarra.timer) { clearTimeout(pizarra.timer); pizarra.timer = null; }
+    const els = pizarra.handle.getElements();
+    if (boardVersion(els) === pizarra.lastVersion) return;
+    if (!now) {
+      pizarra.timer = setTimeout(() => { pizarra.timer = null; saveBoard(true); }, 800);
+      return;
+    }
+    pizarra.lastVersion = boardVersion(els);
+    invoke('council_board_save', { id: pizarra.id, board: PizarraEscena.boardToSave(els, pizarra.appState) }).catch((err) => councilError(err));
+  }
+
+  // Cierra la pizarra del consejo guardando lo pendiente y liberando su vista.
+  function closeBoard() {
+    ++pizarraTurno; // invalida una apertura en curso, aunque no haya nada montado
+    if (!pizarra) return;
+    saveBoard(true);
+    pizarra.handle.unmount();
+    pizarra = null;
+  }
+
+  // Abre la pizarra del consejo abierto: carga el bundle, recupera lo guardado, monta la escena y añade lo que falte tras esperar la fuente.
+  async function openBoard() {
+    try {
+      if (!council) { closeBoard(); return; }
+      if (pizarra && pizarra.id === council.id) { syncBoard(); return; }
+      closeBoard();
+      const turno = ++pizarraTurno; // turno de esta apertura: captura tras el closeBoard de arriba, que también sube el turno
+      await loadPizarra();
+      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
+      const saved = await invoke('council_board_get', { id: council.id });
+      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
+      // habiaVista recuerda si había appState guardado: solo encuadra al abrir cuando no hay vista propia.
+      const habiaVista = !!(saved && saved.appState);
+      const existing = (saved && saved.elements) || [];
+      const handle = Pizarra.mount($('councilCanvas'), { elements: existing, appState: saved && saved.appState }, {
+        theme: dark.matches ? 'dark' : 'light',
+        onChange: (els, appState) => {
+          if (pizarra) { pizarra.appState = appState; saveBoard(false); }
+        },
+      });
+      pizarra = { id: council.id, handle, timer: null, lastVersion: boardVersion(existing), appState: (saved && saved.appState) || null };
+      await Pizarra.fontsReady();
+      if (turno !== pizarraTurno || !council || councilMode !== 'pizarra') return;
+      syncBoard();
+      // Encuadra las tarjetas la primera vez: si el usuario ya tenía su vista guardada, se respeta.
+      if (!habiaVista) pizarra.handle.scrollToContent();
+    } catch (err) { councilError(err); }
+  }
+
+  // Añade a la pizarra abierta las tarjetas del consejo que aún no estén en ella.
+  function syncBoard() {
+    if (!pizarra || !council || pizarra.id !== council.id) return;
+    const actuales = pizarra.handle.getElements();
+    const faltan = PizarraEscena.missingSkeletons(council, actuales);
+    if (faltan.length === 0) return;
+    pizarra.handle.update([...actuales, ...Pizarra.convert(faltan)]);
+    saveBoard(false);
+  }
+
+  // Muestra las columnas o la pizarra según el modo y el consejo abierto, montándola o cerrándola.
+  function applyCouncilMode() {
+    const on = councilMode === 'pizarra' && !!council;
+    $('councilCanvas').hidden = !on;
+    $('councilBody').hidden = on;
+    $('councilMode').setAttribute('aria-pressed', String(councilMode === 'pizarra'));
+    $('councilMode').setAttribute('title', on ? 'Ver como columnas' : 'Ver como pizarra');
+    if (on) openBoard();
+    else closeBoard();
+  }
 
   function toggleWide(force) {
     const on = force ?? !document.body.classList.contains('council-wide');
@@ -1246,7 +1357,13 @@
     $('widenCouncil').setAttribute('aria-pressed', String(on));
   }
   $('widenCouncil').addEventListener('click', () => toggleWide());
-  $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); });
+  // Alterna el modo de la vista del consejo entre columnas y pizarra y guarda la preferencia.
+  $('councilMode').addEventListener('click', () => {
+    councilMode = councilMode === 'pizarra' ? 'columnas' : 'pizarra';
+    store.set('councilMode', councilMode);
+    applyCouncilMode();
+  });
+  $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); applyCouncilMode(); });
   $('newCouncil').addEventListener('click', () => openCouncilDialog(''));
   $('councilSelect').addEventListener('change', () => openCouncil($('councilSelect').value || null));
 
@@ -1265,6 +1382,7 @@
     councilReplyTo = null;
     store.set(`council:${project.path}`, id || '');
     renderCouncil();
+    applyCouncilMode();
     loadCouncilList();
   }
 
@@ -1582,6 +1700,7 @@
       const sameDoc = council?.synthesis?.document === c.synthesis?.document;
       council = c;
       renderCouncil();
+      if (councilMode === 'pizarra') syncBoard();
       if (draftComment) document.getElementById('cCommentText').value = draftComment;
       if (draftDoc && sameDoc && c.phase !== 'approved') document.querySelector('.c-doc').value = draftDoc;
     }
