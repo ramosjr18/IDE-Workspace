@@ -85,6 +85,14 @@ Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
 4. **Evaluar** (si está activado): ver «Evaluador independiente».
 5. **Revisión**: editas el documento si quieres y eliges **Aprobar y guardar**, **Otra ronda** o **Rehacer síntesis**. También puedes añadir tus comentarios, que cuentan en la siguiente ronda.
 
+### Vista de pizarra
+
+- El botón del lápiz en la barra de la pestaña **Consejo** cambia entre la vista de columnas y una pizarra (Excalidraw). La app recuerda la última vista elegida.
+- Cada tarjeta es un rectángulo coloreado por tipo (propuesta, riesgo, apoyo, objeción, pregunta, comentario), con columnas por agente, y las respuestas se unen con flechas.
+- Se pueden mover, agrupar, conectar y dibujar libremente. Se guarda solo, por consejo.
+- Las tarjetas nuevas aparecen en la pizarra mientras el consejo trabaja, sin mover lo que ya se ha colocado. Si borras una tarjeta de la pizarra, no vuelve a aparecer (en las columnas sigue estando).
+- La pizarra se guarda aparte del consejo, en `~/.ide-workspace-chat/councils/boards/<id>.json` (o bajo `CHAT_DATA_DIR`).
+
 ### Evaluador independiente
 
 Es el primer agente propio del IDE. Después de cada síntesis, un evaluador revisa con ojos nuevos si lo convergido es correcto: si responde al tema, recoge las objeciones importantes, no contradice el código y se puede aplicar.
@@ -122,6 +130,7 @@ Mientras un agente trabaja, el panel muestra el archivo que está editando (bot�
 | Caché propia | `src-tauri/src/store.rs` | Guarda cada conversación en disco (`~/.ide-workspace-chat/conversations`, o `CHAT_DATA_DIR`) con qué agente escribió cada respuesta. No depende de ninguna CLI. |
 | Adaptadores | `src-tauri/src/agents.rs` | Convierte la conversación guardada en el contexto del CLI elegido y lo ejecuta. Aquí se cambian comandos y modelos. |
 | Consejo | `src-tauri/src/council.rs` | Fases del consejo, prompts, tarjetas, síntesis y documento final. |
+| Pizarra | `pizarra/entry.jsx`, `ui/pizarra-escena.js` | Excalidraw empaquetado con esbuild (`scripts/pizarra.mjs`) y el paso de tarjetas a elementos de la pizarra. |
 | Pasos en vivo | `src-tauri/src/stream.rs` | Traduce la salida JSON de cada CLI a pasos comunes (comando, edición, lectura, texto…). |
 | Proyecto | `src-tauri/src/project.rs` | Carpeta donde trabajan los agentes y comando `agentes`. |
 | Panel de archivos | `src-tauri/src/workspace.rs` | Árbol del proyecto, estado git, líneas cambiadas, guardar y vigilancia de la carpeta. |
@@ -138,9 +147,12 @@ Requisitos: [Rust](https://rustup.rs) y Node.js 18 o superior. En Linux, además
 npm install
 npm run dev      # abre la app en modo desarrollo (copia Monaco y xterm a ui/vendor)
 npm run build    # genera el instalador de este sistema
+npm run test:ui  # tests de la parte web (node --test)
 cd src-tauri && cargo test                           # tests
 cd src-tauri && cargo test -- --ignored --nocapture  # tests con las CLIs reales
 ```
+
+`npm run vendor` (lo lanzan `dev` y `build`) también empaqueta la pizarra en `ui/vendor/pizarra`.
 
 ## Notas
 
