@@ -157,6 +157,12 @@ fn write_file(current: State<'_, CurrentProject>, path: String, content: String)
     workspace::write(&current.get()?, &path, &content)
 }
 
+/// Guarda en disco lo que la ventana «descarga» (exportar la pizarra a PNG o SVG…): la ruta la elige el usuario en el diálogo «Guardar».
+#[tauri::command]
+fn save_download(path: String, data: Vec<u8>) -> Result<(), String> {
+    std::fs::write(&path, data).map_err(|e| format!("No se pudo guardar {path}: {e}"))
+}
+
 #[tauri::command]
 fn install_cli() -> Result<String, String> {
     project::install_cli()
@@ -729,6 +735,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Busy::default())
         .manage(usage::UsageState::default())
         .manage(Running::default())
@@ -758,6 +765,7 @@ pub fn run() {
             read_file,
             read_head,
             write_file,
+            save_download,
             list_agents,
             usage::get_usage,
             chat,
