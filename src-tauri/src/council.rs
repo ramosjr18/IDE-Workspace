@@ -13,20 +13,6 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Roles predefinidos: id, nombre visible e instrucción para el agente.
-pub const ROLES: &[(&str, &str, &str)] = &[
-    ("arquitecto", "Arquitecto", "Piensa en la estructura a largo plazo: simplicidad, mantenibilidad, coherencia con lo que ya existe en el repo."),
-    ("abogado", "Abogado del diablo", "Busca activamente los puntos débiles, los supuestos no demostrados y las alternativas que nadie ha considerado. No des la razón por cortesía."),
-    ("seguridad", "Seguridad", "Evalúa riesgos de seguridad, privacidad, cumplimiento y qué puede salir mal en producción."),
-    ("coste", "Coste y operación", "Evalúa el coste, el esfuerzo de implantación, la operación diaria y la carga para el equipo."),
-    ("usuario", "Usuario y producto", "Defiende la experiencia de quien usa el producto y el valor que aporta la decisión."),
-    ("libre", "Libre", "Da tu opinión sincera y razonada desde el ángulo que te parezca más importante."),
-];
-
-fn role_info(id: &str) -> (&'static str, &'static str) {
-    ROLES.iter().find(|r| r.0 == id).map(|r| (r.1, r.2)).unwrap_or(("Libre", ROLES[5].2))
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
@@ -263,8 +249,8 @@ pub fn create(
         .into_iter()
         .map(|m| {
             let a = agents::get(&m.agent).ok_or_else(|| format!("Agente desconocido: {}", m.agent))?;
-            let (role_name, _) = role_info(&m.role);
-            Ok(Member { agent: a.id.into(), agent_name: a.name.into(), role: m.role, role_name: role_name.into(), status: "pending".into(), activity: String::new() })
+            let (role_name, _) = crate::roles::role_info(&m.role);
+            Ok(Member { agent: a.id.into(), agent_name: a.name.into(), role: m.role, role_name, status: "pending".into(), activity: String::new() })
         })
         .collect::<Result<Vec<_>, String>>()?;
     agents::get(&moderator).ok_or("Moderador desconocido")?;
@@ -303,7 +289,7 @@ fn output_name(output: &str) -> &'static str {
 }
 
 fn header(c: &Council, agent: &Agent, role: &str) -> String {
-    let (role_name, role_text) = role_info(role);
+    let (role_name, role_text) = crate::roles::role_info(role);
     format!(
         "Participas en un consejo de varios asistentes de IA (Claude, Codex, Copilot…) que deliberan para decidir sobre un tema y redactar {}. Tú eres {} con el rol «{role_name}»: {role_text}\n\
          Estás en MODO SOLO LECTURA: puedes leer archivos del repositorio para fundamentar tu opinión, pero no modifiques nada.\n\n\

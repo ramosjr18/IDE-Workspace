@@ -11,6 +11,7 @@ mod agents;
 mod council;
 mod env;
 mod project;
+mod roles;
 mod store;
 mod stream;
 mod term;
@@ -205,16 +206,23 @@ async fn chat(
 
 // ---------- Consejo de agentes ----------
 
-#[derive(Serialize)]
-struct RoleInfo {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
+/// Roles disponibles en el consejo, tal como están configurados.
+#[tauri::command]
+fn council_roles() -> Vec<roles::Role> {
+    roles::load().roles
 }
 
+/// Roles y plantillas del consejo, para editarlos desde la app.
 #[tauri::command]
-fn council_roles() -> Vec<RoleInfo> {
-    council::ROLES.iter().map(|(id, name, description)| RoleInfo { id, name, description }).collect()
+fn council_config_get() -> roles::Config {
+    roles::load()
+}
+
+/// Guarda la configuración y devuelve la que queda vigente.
+#[tauri::command]
+fn council_config_save(config: roles::Config) -> Result<roles::Config, String> {
+    roles::save(&config)?;
+    Ok(roles::load())
 }
 
 /// Contexto inicial del consejo: la conversación actual en texto (lo más reciente, hasta ~12 000 caracteres).
@@ -455,6 +463,8 @@ pub fn run() {
             chat,
             cancel_chat,
             council_roles,
+            council_config_get,
+            council_config_save,
             council_context,
             council_list,
             council_get,

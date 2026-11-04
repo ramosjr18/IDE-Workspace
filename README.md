@@ -72,8 +72,9 @@ Para decisiones con peso (una política, un ADR, una arquitectura), en lugar de 
 
 Se convoca escribiendo `/consejo tema` en el chat, desde **☰ → Convocar consejo** o con **+** en la pestaña **Consejo**. Eliges:
 
+- **Plantilla** (opcional): rellena el resto de campos con una combinación guardada. Ver «Roles y plantillas».
 - **Tema** y **resultado**: ADR (`docs/adr/`), política (`docs/politicas/`) o nota de decisión (`docs/decisiones/`).
-- **Participantes**, cada uno con un rol: arquitecto, abogado del diablo, seguridad, coste y operación, usuario y producto, o libre.
+- **Participantes**, cada uno con un rol (arquitecto, abogado del diablo, seguridad, coste y operación, usuario y producto, libre, o los que hayas creado).
 - **Moderador**: resume y redacta; mejor uno que no participe.
 - **Contexto**: la conversación actual, que puedes editar antes de empezar.
 
@@ -98,6 +99,14 @@ Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
 - Cada llamada a un agente durante el consejo se anota con su duración y, si la CLI lo informa, tokens, coste en dólares y peticiones (Copilot). También las que fallan.
 - El tablero muestra bajo las fases una línea «Uso del consejo» con el total; al pasar el ratón por encima se ve el desglose por agente. Cada columna muestra el uso de su agente y la de síntesis el del moderador.
 - Qué informa cada CLI: Claude da tokens y coste; Codex da tokens; Copilot da peticiones premium; Antigravity, tokens si los incluye en su resultado; OpenCode solo en versiones que emiten el evento `step_finish` (las recientes no lo hacen). Gemini no da nada. Si una CLI no informa de un dato, no se muestra (no aparece como 0).
+
+### Roles y plantillas
+
+- Los roles no están fijos en el código: se editan en **☰ → Roles y plantillas** (crear, renombrar, cambiar la instrucción y quitar). Por defecto son los seis de siempre.
+- Al convocar, el campo **Plantilla** rellena resultado, participantes con sus roles y moderador. Si algún agente de la plantilla no está disponible, lo avisa.
+- **Guardar como plantilla**, en el mismo diálogo, guarda la selección actual con un nombre. Las plantillas se quitan desde **☰ → Roles y plantillas**.
+- No se puede quitar un rol que use una plantilla: la app lo indica al guardar.
+- Todo se guarda en `~/.ide-workspace-chat/council-config.json` (o bajo `CHAT_DATA_DIR`). Si el archivo falta o no es válido, se usan los roles por defecto.
 
 ### Evaluador independiente
 
@@ -137,6 +146,7 @@ Mientras un agente trabaja, el panel muestra el archivo que está editando (bot�
 | Adaptadores | `src-tauri/src/agents.rs` | Convierte la conversación guardada en el contexto del CLI elegido y lo ejecuta. Aquí se cambian comandos y modelos. |
 | Consejo | `src-tauri/src/council.rs` | Fases del consejo, prompts, tarjetas, síntesis y documento final. |
 | Pizarra | `pizarra/entry.jsx`, `ui/pizarra-escena.js` | Excalidraw empaquetado con esbuild (`scripts/pizarra.mjs`) y el paso de tarjetas a elementos de la pizarra. |
+| Roles | `src-tauri/src/roles.rs` | Roles del consejo y plantillas, editables desde la app (`council-config.json`). |
 | Pasos en vivo | `src-tauri/src/stream.rs` | Traduce la salida JSON de cada CLI a pasos comunes (comando, edición, lectura, texto…). |
 | Proyecto | `src-tauri/src/project.rs` | Carpeta donde trabajan los agentes y comando `agentes`. |
 | Panel de archivos | `src-tauri/src/workspace.rs` | Árbol del proyecto, estado git, líneas cambiadas, guardar y vigilancia de la carpeta. |
