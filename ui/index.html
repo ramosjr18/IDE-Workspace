@@ -60,11 +60,11 @@
   .conv.active { background: color-mix(in srgb, var(--me) 20%, transparent) !important; }
   .conv small { display: block; color: var(--muted); font-size: 11px; }
   /* Estilos propios solo fuera del editor, para no alterar los de Monaco */
-  :where(:is(select, input, textarea, button):not(.monaco-editor *, .monaco-diff-editor *)) {
+  :where(:is(select, input, textarea, button):not(.monaco-editor *, .monaco-diff-editor *, .excalidraw *)) {
     font: inherit; color: var(--text); background: var(--bg);
     border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
   }
-  :where(button:not(.monaco-editor *, .monaco-diff-editor *)) { cursor: pointer; background: var(--panel); }
+  :where(button:not(.monaco-editor *, .monaco-diff-editor *, .excalidraw *)) { cursor: pointer; background: var(--panel); }
   button:disabled { opacity: .6; cursor: default; }
   /* Desplegables: WebKitGTK los pinta con el tema nativo (fondo claro) aunque la app esté en oscuro. */
   :root { color-scheme: light dark; }
@@ -652,6 +652,43 @@
 <script>
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
+  // Descargas de la ventana (exportar la pizarra…): el WebView no las gestiona, así que se guardan con el diálogo «Guardar».
+  const anchorClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    if (this.download && /^(blob|data):/.test(this.href)) { saveDownload(this.href, this.download); return; }
+    return anchorClick.call(this);
+  };
+  async function saveDownload(href, name) {
+    try {
+      const blob = await (await fetch(href)).blob();
+      const dir = await window.__TAURI__.path.downloadDir().catch(() => null);
+      const path = await window.__TAURI__.dialog.save({ defaultPath: dir ? `${dir}/${name}` : name, title: 'Guardar' });
+      if (!path) return;
+      const data = Array.from(new Uint8Array(await blob.arrayBuffer()));
+      await invoke('save_download', { path, data });
+    } catch (err) {
+      window.__TAURI__.dialog.message(String(err), { title: 'Guardar', kind: 'error' });
+    }
+  }
+  // Copiar imágenes (pizarra → portapapeles): el WebView no lo permite, se hace con el plugin de portapapeles de Tauri.
+  if (!window.ClipboardItem) {
+    window.ClipboardItem = class {
+      constructor(data) { this.data = data; this.types = Object.keys(data); }
+      async getType(type) { return await this.data[type]; }
+    };
+  }
+  if (navigator.clipboard && window.__TAURI__.clipboardManager) {
+    const clipboardWrite = navigator.clipboard.write ? navigator.clipboard.write.bind(navigator.clipboard) : null;
+    navigator.clipboard.write = async (items) => {
+      const item = items && items[0];
+      if (item && item.types.includes('image/png')) {
+        const blob = await item.getType('image/png');
+        return window.__TAURI__.clipboardManager.writeImage(new Uint8Array(await blob.arrayBuffer()));
+      }
+      if (clipboardWrite) return clipboardWrite(items);
+      throw new Error('El portapapeles no admite este contenido');
+    };
+  }
   const openUrl = (url) => window.__TAURI__.opener.openUrl(url);
   const pickFolder = (defaultPath) => window.__TAURI__.dialog.open({ directory: true, defaultPath });
   const $ = (id) => document.getElementById(id);
