@@ -154,6 +154,14 @@ mod tests {
         // `tauri dev`: el propio src-tauri no es un proyecto
         assert_eq!(initial_from(none(), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")))), None);
     }
+
+    #[test]
+    fn board_text_errores() {
+        // Solo casos de error, con un proyecto inventado: no toca data_dir() ni variables de entorno.
+        let p = Path::new("/proyecto/que/no/existe");
+        assert!(board_text(p, "nada").unwrap_err().contains("No hay ningún diagrama"));
+        assert!(board_text(p, "proyecto").is_err());
+    }
 }
 
 /// Pizarra libre del proyecto (pestaña Pizarra sin consejo abierto): `data_dir()/boards/<sha1 de la ruta>.json`.
@@ -252,6 +260,50 @@ pub fn diagram_get(project: &Path, id: &str) -> Option<serde_json::Value> {
         return None;
     }
     serde_json::from_str(&fs::read_to_string(diagrams_dir(project).join(format!("{id}.json"))).ok()?).ok()
+}
+
+/// Id del diagrama al que se refiere `which` (id exacto o parte del título), o "proyecto" para la pizarra libre.
+pub fn diagram_resolve(project: &Path, which: &str) -> Result<String, String> {
+    if which == "proyecto" {
+        return if board_get(project).is_some() {
+            Ok("proyecto".into())
+        } else {
+            Err("El proyecto no tiene pizarra libre todavía".into())
+        };
+    }
+    let list = diagrams_list(project);
+    let mut cands: Vec<&Diagram> = Vec::new();
+    if let Some(d) = list.iter().find(|d| d.id == which) {
+        cands.push(d);
+    } else {
+        let w = which.to_lowercase();
+        cands.extend(list.iter().filter(|d| d.title.to_lowercase().contains(&w)));
+    }
+    if cands.len() > 1 {
+        return Err(format!(
+            "Hay varios diagramas con ese título; usa el id:\n{}",
+            cands.iter().map(|d| format!("{} · {}", d.id, d.title)).collect::<Vec<_>>().join("\n")
+        ));
+    }
+    cands.first().map(|d| d.id.clone()).ok_or_else(|| format!("No hay ningún diagrama «{which}». Usa agentes pizarra --listar"))
+}
+
+/// Texto de un diagrama o de la pizarra libre para que lo lean los agentes: título, código original y pizarra actual.
+pub fn board_text(project: &Path, which: &str) -> Result<String, String> {
+    let id = diagram_resolve(project, which)?;
+    if id == "proyecto" {
+        let board = board_get(project).ok_or("El proyecto no tiene pizarra libre todavía")?;
+        return Ok(format!("# Pizarra libre del proyecto\n\n{}", crate::escena::describir(&board)));
+    }
+    let d = diagram_get(project, &id).ok_or("Diagrama no encontrado")?;
+    let desc = if d.get("elements").is_some() {
+        crate::escena::describir(&d)
+    } else {
+        "(todavía no se ha abierto en la pizarra: es el código de arriba)".into()
+    };
+    let title = d["title"].as_str().unwrap_or("Diagrama");
+    let format = d["format"].as_str().unwrap_or("mermaid");
+    Ok(format!("# {title}\n\n## Código {format} original\n```{format}\n{}\n```\n\n## Pizarra actual\n{desc}", d["source"].as_str().unwrap_or_default()))
 }
 
 /// Guarda lo dibujado (elements, appState, files) conservando título y código fuente.

@@ -13,6 +13,7 @@ mod accounts;
 mod agents;
 mod council;
 mod env;
+mod escena;
 mod own_agents;
 mod panes;
 mod project;
@@ -190,6 +191,8 @@ async fn chat(
     message: String,
     workflow: Option<String>,
     account: Option<String>,
+    board_id: Option<String>,
+    board_title: Option<String>,
 ) -> Result<ChatReply, String> {
     let ag = agents::get(&agent).ok_or_else(|| format!("Agente desconocido: {agent}"))?;
     if message.trim().is_empty() {
@@ -241,6 +244,11 @@ async fn chat(
                 }
             }
         }
+        // Pizarra que el usuario tiene abierta: se le dice al agente en cada mensaje (no se guarda en la conversación).
+        let board_note = board_id.clone().filter(|id| !id.trim().is_empty() && env::launcher_ready()).map(|id| {
+            let title = board_title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "Diagrama".into());
+            format!("[Nota de la app] El usuario tiene abierta en la pizarra «{title}». Si tiene que ver con lo que pide, léela con `agentes pizarra --leer {id}` (incluye sus cambios a mano).")
+        });
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
             running.0.lock().unwrap().insert(request_id.clone(), tx);
@@ -269,6 +277,10 @@ async fn chat(
                     }
                     (agents::Session::New, prompt)
                 }
+            };
+            let prompt = match &board_note {
+                Some(n) => format!("{n}\n\n{prompt}"),
+                None => prompt,
             };
             outcome = accounts::scope(acc.clone(), agents::run_session(cand, &session, &prompt, &cwd, &on_step, rx)).await;
             // La CLI ya no tiene la sesión: se repite una vez con sesión nueva. agy no falla: abre
@@ -559,6 +571,12 @@ fn diagram_get(current: State<'_, CurrentProject>, id: String) -> Result<Option<
     Ok(project::diagram_get(&panes::repo_root(&current.get()?), &id))
 }
 
+/// La ventana entrega el PNG pedido por `agentes pizarra --imagen` (o el error si no pudo hacerlo).
+#[tauri::command]
+fn board_image_done(req: String, data: Option<Vec<u8>>, error: Option<String>) {
+    panes::image_done(&req, match data { Some(d) => Ok(d), None => Err(error.unwrap_or_else(|| "La ventana no pudo hacer la imagen".into())) });
+}
+
 #[tauri::command]
 fn diagram_save(current: State<'_, CurrentProject>, id: String, board: serde_json::Value) -> Result<(), String> {
     project::diagram_save(&panes::repo_root(&current.get()?), &id, &board)
@@ -782,6 +800,7 @@ pub fn run() {
             project_board_save,
             diagrams_list,
             diagram_get,
+            board_image_done,
             diagram_save,
             diagram_create,
             diagram_delete,
