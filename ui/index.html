@@ -1868,7 +1868,11 @@
 
   // Convierte el código de un diagrama en elementos (la primera vez que se abre).
   async function diagramScene(d) {
-    if (d.elements) return { elements: d.elements, appState: d.appState, files: d.files || {} };
+    if (d.elements) {
+      const fit = Pizarra.fitSvgImages(d.elements, d.files || {});
+      // Si se corrigió el tamaño, se descarta la vista guardada (su zoom era para la imagen encogida) para que se encuadre de nuevo.
+      return { elements: fit.elements, appState: fit.changed ? null : d.appState, files: d.files || {} };
+    }
     if (d.format === 'excalidraw') {
       const parsed = JSON.parse(d.source);
       const skeletons = Array.isArray(parsed) ? parsed : parsed.elements || [];
