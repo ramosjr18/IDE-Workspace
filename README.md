@@ -96,6 +96,8 @@ El botón **Enviar** pasa a ser **Detener** mientras el agente trabaja. Los paso
 
 Cada CLI informa de sus pasos en su propio formato (Claude `stream-json`, Codex `--json`, OpenCode `--format json`, Antigravity `stream-json`, Copilot `--output-format json`); la app los traduce a uno común (`src-tauri/src/stream.rs`). Gemini solo muestra el texto de la respuesta.
 
+**Avisos al terminar.** Si el agente del chat lanza otros agentes (`agentes run`) o convoca un consejo (`agentes consejo`), no se queda esperando: termina su turno y puedes seguir escribiendo. Cuando terminan, la app manda a esa conversación un aviso con el código de salida y las últimas líneas del log, y el agente continúa solo. Si terminan varios mientras el chat está ocupado, llegan juntos en un solo aviso al acabar el turno. Si la conversación no está abierta, el aviso espera a que la abras. Se desactiva en ☰ → **Avisar al agente cuando terminen sus agentes**. `agentes wait` sigue existiendo para scripts.
+
 ## Consejo de agentes
 
 Para decisiones con peso (una política, un ADR, una arquitectura), en lugar de preguntar a un solo agente puedes convocar un **consejo**: varios agentes opinan, se critican entre ellos y un moderador redacta la propuesta. Después vuelves al chat de un solo agente con la decisión como contexto.
