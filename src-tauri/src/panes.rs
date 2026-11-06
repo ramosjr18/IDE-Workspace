@@ -501,6 +501,15 @@ pub fn launch(app: &AppHandle, req: LaunchRequest, loads: &[accounts::Load]) -> 
 static PENDING_IMAGES: std::sync::LazyLock<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
+/// Consejos convocados por un agente del chat con `agentes consejo`: solo esos avisan a la conversación al terminar
+/// (los que convoca el usuario desde el diálogo no lanzan un turno del agente por su cuenta).
+static CHAT_COUNCILS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// ¿Lo convocó un agente del chat? (y deja de recordarlo: el aviso se manda una vez).
+pub fn council_from_chat(id: &str) -> bool {
+    CHAT_COUNCILS.lock().unwrap().remove(id)
+}
+
 /// La ventana entrega la imagen (o un error) de una petición `agentes pizarra --imagen`.
 pub fn image_done(req: &str, result: Result<Vec<u8>, String>) {
     if let Some(tx) = PENDING_IMAGES.lock().unwrap().remove(req) {
@@ -661,6 +670,9 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
                 Err(e) => return err(e),
             };
             let runs = app.state::<Arc<crate::council::Runs>>().inner().clone();
+            if c.conversation_id.is_some() {
+                CHAT_COUNCILS.lock().unwrap().insert(c.id.clone());
+            }
             if let Err(e) = crate::council::launch(app.clone(), runs, c.clone(), crate::council::Plan::Full) {
                 return err(e);
             }
