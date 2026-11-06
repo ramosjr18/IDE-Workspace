@@ -510,6 +510,26 @@ enum Request {
         format: String,
         text: String,
     },
+    /// `agentes consejo --tema …`: convoca un consejo real de la app (solo lectura) y lo muestra en la pestaña Consejo.
+    Council {
+        cwd: String,
+        topic: String,
+        /// Participantes «cli» o «cli:rol»; vacío = las CLIs listas (hasta 3).
+        #[serde(default)]
+        members: Vec<String>,
+        #[serde(default)]
+        moderator: String,
+        /// adr | politica | nota (por defecto nota)
+        #[serde(default)]
+        output: String,
+        #[serde(default)]
+        context: String,
+        #[serde(default)]
+        #[serde(rename = "conversationId")]
+        conversation_id: Option<String>,
+    },
+    /// `agentes consejo --estado <id>`: el consejo tal como está (fase, tarjetas, síntesis).
+    CouncilStatus { id: String },
     /// `agentes pizarra --imagen`: PNG de un diagrama o de la pizarra libre.
     Image { cwd: String, which: String, path: String },
 }
@@ -533,6 +553,8 @@ struct Reply {
     panes: Option<Vec<Pane>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     board: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    council: Option<crate::council::Council>,
 }
 
 fn err(e: impl Into<String>) -> Reply {
@@ -578,11 +600,52 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
             match crate::project::diagram_create(&root, &title, &format, &text) {
                 Ok(d) => {
                     let _ = app.emit("board-add", serde_json::json!({ "project": root.to_string_lossy(), "id": d.id, "title": d.title }));
-                    Reply { ok: true, error: None, pane: None, panes: None, board: Some(d.id) }
+                    Reply { ok: true, board: Some(d.id), ..Default::default() }
                 }
                 Err(e) => err(e),
             }
         }
+        Request::Council { cwd, topic, members, moderator, output, context, conversation_id } => {
+            let root = repo_root(Path::new(&cwd));
+            // CLIs listas ahora mismo (instaladas y con sesión iniciada).
+            let mut ready: Vec<String> = Vec::new();
+            for a in crate::agents::AGENTS {
+                if crate::agents::status(a).await == "ready" {
+                    ready.push(a.id.to_string());
+                }
+            }
+            // Roles por defecto, en este orden, para quien no indique el suyo.
+            const ROLES: [&str; 4] = ["arquitecto", "abogado", "coste", "usuario"];
+            let pedidos: Vec<String> = if members.is_empty() { ready.iter().take(3).cloned().collect() } else { members };
+            let mut nuevos = Vec::new();
+            for (i, m) in pedidos.iter().enumerate() {
+                let (agent, role) = match m.split_once(':') {
+                    Some((a, r)) => (a.trim().to_string(), r.trim().to_string()),
+                    None => (m.trim().to_string(), ROLES[i % ROLES.len()].to_string()),
+                };
+                if !ready.contains(&agent) {
+                    return err(format!("La CLI «{agent}» no está lista (instalada y con sesión). Listas: {}", ready.join(", ")));
+                }
+                nuevos.push(crate::council::NewMember { agent, role });
+            }
+            let moderator = if moderator.trim().is_empty() { nuevos.first().map(|m| m.agent.clone()).unwrap_or_default() } else { moderator.trim().to_string() };
+            let output = if output.trim().is_empty() { "nota".to_string() } else { output.trim().to_string() };
+            let judge = crate::council::Judge { enabled: true, pool: ready.clone(), max_rounds: 2, used_rounds: 0 };
+            let c = match crate::council::create(&root, conversation_id, topic, output, context, nuevos, moderator, judge) {
+                Ok(c) => c,
+                Err(e) => return err(e),
+            };
+            let runs = app.state::<Arc<crate::council::Runs>>().inner().clone();
+            if let Err(e) = crate::council::launch(app.clone(), runs, c.clone(), crate::council::Plan::Full) {
+                return err(e);
+            }
+            let _ = app.emit("council-open", serde_json::json!({ "project": root.to_string_lossy(), "id": c.id }));
+            Reply { ok: true, council: Some(c), ..Default::default() }
+        }
+        Request::CouncilStatus { id } => match crate::council::get(&id) {
+            Some(c) => Reply { ok: true, council: Some(c), ..Default::default() },
+            None => err(format!("No hay ningún consejo {id}")),
+        },
         Request::Image { cwd, which, path } => {
             let root = repo_root(Path::new(&cwd));
             let id = match crate::project::diagram_resolve(&root, &which) {
