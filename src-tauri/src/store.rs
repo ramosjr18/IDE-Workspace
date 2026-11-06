@@ -97,11 +97,13 @@ fn save(conv: &Conversation) -> Result<(), String> {
     write_atomic(&conv_dir().join(format!("{}.json", conv.id)), &json)
 }
 
-/// Añade mensajes a la conversación `id`; si no existe (o es None), crea una nueva en `project`.
+/// Añade mensajes a la conversación `id`; si no existe (o es None), crea una nueva en `project`
+/// conservando el `id` recibido si es un uuid válido (así los agentes la heredan desde el primer mensaje).
 pub fn append(id: Option<&str>, project: &str, messages: Vec<Message>) -> Result<Conversation, String> {
     let ts = now();
+    let new_id = id.filter(|i| uuid::Uuid::parse_str(i).is_ok()).map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut conv = id.and_then(get).unwrap_or_else(|| Conversation {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: new_id,
         title: "Conversación nueva".into(),
         created_at: ts.clone(),
         updated_at: ts.clone(),
