@@ -43,6 +43,8 @@ pub struct Pane {
     pub account: Option<String>,
     /// Relevos hechos: «Codex (principal) → Codex (cuenta-2): Cuota de Codex agotada».
     pub relays: Vec<String>,
+    #[serde(default)]
+    pub conversation: Option<String>,
 }
 
 /// Lo necesario para relanzar el carril en otra cuenta o CLI.
@@ -88,6 +90,9 @@ pub struct LaunchRequest {
     /// Nombre de cuenta, `auto` (por defecto: la de más cuota libre) o `principal`.
     #[serde(default)]
     pub account: Option<String>,
+    /// Conversación del chat que lanzó el panel (AGENTES_CONVERSACION): se le avisa al terminar.
+    #[serde(default)]
+    pub conversation: Option<String>,
 }
 
 fn now() -> String {
@@ -237,6 +242,23 @@ impl Panes {
     }
 }
 
+/// Si el panel lo lanzó una conversación del chat, le avisa de que ha terminado (con el final de su log).
+fn notify_finished(app: &AppHandle, panes: &Panes, id: u32) {
+    let Some(p) = panes.get(id) else { return };
+    let Some(conv) = p.conversation.clone().filter(|c| !c.is_empty()) else { return };
+    if p.status == "running" {
+        return;
+    }
+    let log = std::fs::read_to_string(&p.log).unwrap_or_default();
+    let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(15)..].join("\n");
+    let tail = crate::env::strip_ansi(&tail);
+    let _ = app.emit("pane-finished", serde_json::json!({
+        "conversation": conv, "id": p.id, "name": p.name, "status": p.status,
+        "exitCode": p.exit_code, "worktree": p.worktree, "log": p.log, "tail": tail,
+    }));
+}
+
 /// Elige la cuenta (y, si ninguna de esa CLI tiene cuota, otra CLI) para un carril.
 /// Devuelve la CLI, sus argumentos y la cuenta.
 /// `stdin`: lo que recibe la CLI por la entrada estándar; `brief`: el texto del carril, para otra CLI.
@@ -328,12 +350,14 @@ fn start(app: &AppHandle, pane: Pane, spec: Spec, acc: &Account) -> Result<Pane,
                         }
                         let key = panes.get(id).map(|p| p.key).unwrap_or_default();
                         panes.finish(&key, code);
+                        notify_finished(&app3, &panes, id);
                     }
                     let _ = app3.emit("panes-changed", ());
                 });
             }
             None => {
                 p2.finish(&k2, code);
+                notify_finished(&app2, &p2, id);
                 let _ = app2.emit("panes-changed", ());
             }
         }
@@ -464,6 +488,7 @@ pub fn launch(app: &AppHandle, req: LaunchRequest, loads: &[accounts::Load]) -> 
         log: log.to_string_lossy().to_string(),
         account: acc.name.clone(),
         relays: Vec::new(),
+        conversation: req.conversation.clone(),
     };
     let tried = vec![acc.id.clone()];
     let exe = if Some(cli_name.as_str()) == cli_path.file_stem().and_then(|n| n.to_str()) { cli.clone() } else { cli_name.clone() };
@@ -475,6 +500,15 @@ pub fn launch(app: &AppHandle, req: LaunchRequest, loads: &[accounts::Load]) -> 
 /// Imágenes pedidas a la ventana y aún sin respuesta: id de petición → canal para la respuesta.
 static PENDING_IMAGES: std::sync::LazyLock<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Consejos convocados por un agente del chat con `agentes consejo`: solo esos avisan a la conversación al terminar
+/// (los que convoca el usuario desde el diálogo no lanzan un turno del agente por su cuenta).
+static CHAT_COUNCILS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// ¿Lo convocó un agente del chat? (y deja de recordarlo: el aviso se manda una vez).
+pub fn council_from_chat(id: &str) -> bool {
+    CHAT_COUNCILS.lock().unwrap().remove(id)
+}
 
 /// La ventana entrega la imagen (o un error) de una petición `agentes pizarra --imagen`.
 pub fn image_done(req: &str, result: Result<Vec<u8>, String>) {
@@ -636,6 +670,9 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
                 Err(e) => return err(e),
             };
             let runs = app.state::<Arc<crate::council::Runs>>().inner().clone();
+            if c.conversation_id.is_some() {
+                CHAT_COUNCILS.lock().unwrap().insert(c.id.clone());
+            }
             if let Err(e) = crate::council::launch(app.clone(), runs, c.clone(), crate::council::Plan::Full) {
                 return err(e);
             }
@@ -914,6 +951,7 @@ impl From<PaneOut> for Pane {
             started_at: String::new(),
             ended_at: None,
             log: p.log,
+            conversation: None,
         }
     }
 }
@@ -986,6 +1024,9 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
             }
             v["args"] = cli_args.into();
             v["wait"] = wait.into();
+            if let Some(c) = std::env::var("AGENTES_CONVERSACION").ok().filter(|s| !s.is_empty()) {
+                v["conversation"] = c.into();
+            }
             if let Some(b) = brief {
                 v["stdin"] = b.into();
             }

@@ -211,6 +211,8 @@ async fn chat(
     let (previous, sessions) =
         conversation_id.as_deref().and_then(store::get).map(|c| (c.messages, c.sessions)).unwrap_or_default();
     let key = conversation_id.clone().unwrap_or_default();
+    // Id de la conversación ya desde el primer mensaje: los agentes que lance el chat lo heredan.
+    let conv_id = conversation_id.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let flow = workflow.as_deref().and_then(workflows::get);
     let flow_id = flow.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| "directo".into());
     if !key.is_empty() && !busy.0.lock().unwrap().insert(key.clone()) {
@@ -288,7 +290,7 @@ async fn chat(
                 Some(n) => format!("{n}\n\n{prompt}"),
                 None => prompt,
             };
-            outcome = accounts::scope(acc.clone(), agents::run_session(cand, &session, &prompt, &cwd, &on_step, rx)).await;
+            outcome = env::conversation_scope(conv_id.clone(), accounts::scope(acc.clone(), agents::run_session(cand, &session, &prompt, &cwd, &on_step, rx))).await;
             // La CLI ya no tiene la sesión: se repite una vez con sesión nueva. agy no falla: abre
             // otra conversación y lo dice con un id distinto.
             let lost = match (&resume, &outcome) {
@@ -329,7 +331,7 @@ async fn chat(
     }
     // Solo se guarda el intercambio si el agente respondió bien.
     let conv = store::append(
-        conversation_id.as_deref(),
+        Some(conv_id.as_str()),
         &cwd.to_string_lossy(),
         vec![
             store::Message { role: "user".into(), text: message, agent: None, agent_name: None, ts: String::new(), steps: None },
@@ -706,7 +708,7 @@ async fn pane_launch(
     account: Option<String>,
 ) -> Result<panes::Pane, String> {
     let cwd = current.get()?.to_string_lossy().to_string();
-    let req = panes::LaunchRequest { cwd, cli, name, worktree, branch, args, stdin: brief, account };
+    let req = panes::LaunchRequest { cwd, cli, name, worktree, branch, args, stdin: brief, account, conversation: None };
     let loads = usage::loads(&app.state::<usage::UsageState>()).await;
     tauri::async_runtime::spawn_blocking(move || panes::launch(&app, req, &loads)).await.map_err(|e| e.to_string())?
 }
