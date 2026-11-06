@@ -12,6 +12,8 @@ Usa las CLIs y las sesiones que ya tengas en tu ordenador. Si un agente no está
 
 Los instaladores se generan en GitHub Actions (pestaña Actions → Build → Run workflow) o en local con `npm run build`. Cada sistema tiene que compilar el suyo.
 
+**Versión estable en WSL** (una copia fija para trabajar a diario, que no cambia con el repo): cómo abrirla, actualizarla y volver atrás en [docs/version-estable-wsl.md](docs/version-estable-wsl.md).
+
 ## Abrir en un proyecto
 
 Como `claude` o `code .`: abre la app desde la carpeta de un repo y los agentes trabajarán ahí.
