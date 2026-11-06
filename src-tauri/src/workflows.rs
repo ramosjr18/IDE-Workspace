@@ -15,7 +15,7 @@ pub struct Workflow {
 }
 
 /// Nota que reciben siempre los agentes del chat: si delegan en otro proceso, que se vea en la vista Agentes.
-pub const LAUNCHER_NOTE: &str = "[Nota de la app «Chat de agentes»] Si lanzas otros agentes CLI (codex, opencode, claude, agy, gemini…) para que trabajen en paralelo, hazlo con `agentes run` en vez de `nohup`/`&`: así cada uno sale en su propia terminal en la vista «Agentes» del usuario. `agentes run --help` explica el uso; `agentes status` y `agentes wait <id>` dicen quién terminó y con qué código. Si el usuario pide un diagrama, un esquema, un plan visual o algo que se entienda mejor dibujado, escríbelo en Mermaid y envíalo con `agentes pizarra --title \"<título>\" diagrama.mmd` (o por la entrada estándar): se le abre en su pizarra. Un bloque ```mermaid en tu respuesta también llega a la pizarra. Para LEER la pizarra (diagramas que haya y los cambios que el usuario hizo a mano), usa `agentes pizarra --listar` y `agentes pizarra --leer <id|título|proyecto>`; consúltala antes de escribir un plan o de responder sobre algo que pueda estar dibujado allí. Si el usuario pide un consejo, una deliberación o que varios agentes evalúen opciones o decidan algo, convoca el Consejo de la app con `agentes consejo --tema \"…\"` (participantes en solo lectura, sale en su pestaña Consejo); nunca lo simules lanzando agentes con `agentes run`, que escriben en el repo. Consulta el resultado con `agentes consejo --estado <id>`.";
+pub const LAUNCHER_NOTE: &str = "[Nota de la app «Chat de agentes»] Si lanzas otros agentes CLI (codex, opencode, claude, agy, gemini…) para que trabajen en paralelo, hazlo con `agentes run` en vez de `nohup`/`&`: así cada uno sale en su propia terminal en la vista «Agentes» del usuario. `agentes run --help` explica el uso; No esperes a que terminen (no uses `agentes wait` ni bucles de espera): termina tu turno diciendo qué has lanzado; la app te mandará un aviso en esta conversación cuando acaben, con el código y el final de su log. `agentes status` muestra cómo van. Si el usuario pide un diagrama, un esquema, un plan visual o algo que se entienda mejor dibujado, escríbelo en Mermaid y envíalo con `agentes pizarra --title \"<título>\" diagrama.mmd` (o por la entrada estándar): se le abre en su pizarra. Un bloque ```mermaid en tu respuesta también llega a la pizarra. Para LEER la pizarra (diagramas que haya y los cambios que el usuario hizo a mano), usa `agentes pizarra --listar` y `agentes pizarra --leer <id|título|proyecto>`; consúltala antes de escribir un plan o de responder sobre algo que pueda estar dibujado allí. Si el usuario pide un consejo, una deliberación o que varios agentes evalúen opciones o decidan algo, convoca el Consejo de la app con `agentes consejo --tema \"…\"` (participantes en solo lectura, sale en su pestaña Consejo); nunca lo simules lanzando agentes con `agentes run`, que escriben en el repo. Consulta el resultado con `agentes consejo --estado <id>`.";
 
 const TEAM: &str = r#"[Forma de trabajar: Equipo en worktrees]
 Trabajas como orquestador: no implementas tú, repartes el trabajo entre otros agentes CLI y lo supervisas. Sigue estos pasos:
@@ -26,7 +26,7 @@ Decidir no es implementar: si hay que evaluar alternativas o tomar una decisión
 3. Brief por carril, por escrito, siempre en este orden: el problema con las palabras del usuario · su zona exclusiva y qué está prohibido tocar, con el porqué · el contrato con los demás carriles cerrado por adelantado (rutas, códigos de error, nombres de campo) · la línea base de tests medida · una puerta que se cierra con ficheros reales, no con «compila» · y «si ves que lo correcto es otra cosa, párate y escríbelo en ultimo-mensaje.md en vez de improvisar». Pide un commit por paso.
 4. Cuota. Antes de lanzar, comprueba que cada CLI responde a una tarea real corta (no basta con «di OK»). Si una no tiene cuota, pasa su brief a otra.
 5. Lanzar. Un worktree por agente con `agentes run --cli <cli> --worktree <agente>-<tema> --brief <brief.md> -- <argumentos>`. Ejemplos: `agentes run --cli codex --worktree codex-api --brief brief.md -- exec --approve-for-me -` · `agentes run --cli opencode --worktree oc-ui -- run --auto "$(cat brief.md)"` · `agentes run --cli claude --worktree claude-docs -- -p "$(cat brief.md)" --dangerously-skip-permissions`.
-6. Supervisar. `agentes status` y `agentes wait <id>`; la salida de cada uno está en <worktree>/agente.log. Si uno se queda sin cuota a medias, mira si dejó trabajo sin commitear: suele estar escrito.
+6. Supervisar. Tras lanzar, termina tu turno y dile al usuario qué has lanzado: no esperes con `agentes wait`. La app te avisa en esta conversación cuando cada agente termina (código y final del log); entonces sigue. `agentes status` dice cómo van; la salida de cada uno está en <worktree>/agente.log. Si uno se queda sin cuota a medias, mira si dejó trabajo sin commitear: suele estar escrito.
 7. Verificar, no creer. Corre tú mismo build y tests en cada worktree y comprueba en el código cada afirmación de su informe. Devuelve correcciones concretas al mismo agente.
 8. Mergear en el orden del plan (quien define un contrato antes que quien lo consume), quitar ultimo-mensaje.md antes de mergear, y limpiar (`git worktree remove`, borrar ramas).
 9. Informa corto: qué hizo cada uno, qué se corrigió y qué queda."#;
@@ -111,6 +111,12 @@ mod tests {
     fn el_consejo_se_convoca_con_agentes_consejo() {
         assert!(LAUNCHER_NOTE.contains("agentes consejo --tema"));
         assert!(TEAM.contains("agentes consejo --tema"));
+    }
+
+    #[test]
+    fn no_espera_a_sus_agentes() {
+        assert!(LAUNCHER_NOTE.contains("no uses `agentes wait`"));
+        assert!(TEAM.contains("no esperes con `agentes wait`"));
     }
 
     #[test]
