@@ -419,6 +419,7 @@
   <section class="needs-project">
     <h3>Vista</h3>
     <button id="togglePanel" type="button" class="item"><i class="codicon codicon-layout-sidebar-right"></i> <span id="togglePanelText">Ocultar panel de archivos</span></button>
+    <button id="toggleAvisos" type="button" class="item" aria-pressed="true"><i class="codicon codicon-bell"></i> Avisar al agente cuando terminen sus agentes</button>
   </section>
 </nav>
 <main id="layout">
@@ -760,6 +761,8 @@
     } catch {
       loadConversation(null);
     }
+    // IDE-25: conversación cargada; manda los avisos pendientes si el chat está libre.
+    setTimeout(flushAvisos, 0);
   }
 
   async function loadConversationList() {
@@ -789,6 +792,15 @@
   $('menuCouncil').addEventListener('click', () => openCouncilDialog(''));
   $('menuRoles').addEventListener('click', () => openRolesDialog());
   $('menuOwnAgents').addEventListener('click', () => openOwnAgents());
+
+  // Avisos automáticos (IDE-25): activados salvo que el usuario los apague.
+  const avisosOn = () => store.get('avisosAuto') !== 'off';
+  $('toggleAvisos').setAttribute('aria-pressed', String(avisosOn()));
+  $('toggleAvisos').addEventListener('click', () => {
+    store.set('avisosAuto', avisosOn() ? 'off' : 'on');
+    $('toggleAvisos').setAttribute('aria-pressed', String(avisosOn()));
+    flushAvisos();
+  });
   $('reset').addEventListener('click', () => {
     loadConversation(null);
     loadConversationList();
@@ -921,7 +933,42 @@
       $('send').textContent = 'Enviar';
       $('send').classList.remove('stop');
       $('input').focus();
+      // Fuera del evento: un requestSubmit dentro de submit se ignora.
+      setTimeout(flushAvisos, 0);
     }
+  });
+
+  // ---------- Avisos de agentes que terminan (IDE-25) ----------
+  // Por conversación: textos pendientes de mandar al agente cuando esa conversación esté abierta y libre.
+  const avisos = new Map();
+  function addAviso(conv, text) {
+    if (!conv) return;
+    if (!avisos.has(conv)) avisos.set(conv, []);
+    avisos.get(conv).push(text);
+    flushAvisos();
+  }
+  // Manda juntos los avisos pendientes de la conversación abierta, si el chat no está ocupado.
+  function flushAvisos() {
+    if (!avisosOn() || sending || !conversationId) return;
+    const lista = avisos.get(conversationId);
+    if (!lista || lista.length === 0) return;
+    avisos.delete(conversationId);
+    const texto = `[Aviso de la app] ${lista.length === 1 ? 'Ha terminado un trabajo que lanzaste' : `Han terminado ${lista.length} trabajos que lanzaste`}:\n\n${lista.join('\n\n')}\n\nRevisa el resultado y continúa con el plan; si ya no queda nada, informa al usuario.`;
+    // Se envía como un mensaje más, sin perder lo que el usuario estuviera escribiendo.
+    const borrador = $('input').value;
+    $('input').value = texto;
+    $('form').requestSubmit();
+    $('input').value = borrador;
+  }
+  listen('pane-finished', (e) => {
+    const p = e.payload;
+    const estado = p.status === 'done' ? 'terminó bien (código 0)' : `terminó con error (código ${p.exitCode ?? '?'})`;
+    addAviso(p.conversation, `- Panel #${p.id} «${p.name}» ${estado}.${p.worktree ? ` Worktree: ${p.worktree}.` : ''} Log: ${p.log}\n  Últimas líneas:\n${(p.tail || '').split('\n').map((l) => '    ' + l).join('\n')}`);
+  });
+  listen('council-finished', (e) => {
+    const c = e.payload;
+    const fase = c.phase === 'review' ? 'terminó: el usuario tiene que revisar y aprobar el documento' : c.phase === 'cancelled' ? 'se canceló' : c.phase === 'approved' ? 'está aprobado' : `terminó con error${c.error ? `: ${c.error}` : ''}`;
+    addAviso(c.conversation, `- Consejo «${c.topic}» ${fase}. Léelo con: agentes consejo --estado ${c.id}`);
   });
 
   // ---------- Pasos de los agentes (comandos, archivos, texto…) ----------
