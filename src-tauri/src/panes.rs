@@ -766,7 +766,7 @@ Uso:
                             código original y pizarra actual en texto, con los cambios del usuario
   agentes pizarra --imagen <id|título|proyecto> <ruta.png>
                             exporta la pizarra a PNG (necesita la app abierta en este proyecto)
-  agentes consejo --tema "<tema>" [--participantes claude,codex:abogado] [--moderador claude] [--resultado adr|politica|nota] [--contexto archivo]
+  agentes consejo --tema \"<tema>\" [--participantes claude,codex:abogado] [--moderador claude] [--resultado adr|politica|nota] [--contexto archivo]
                             convoca un consejo real (pestaña Consejo, solo lectura) para evaluar opciones o decidir
   agentes consejo --estado <id>
                             fase, tarjetas, síntesis y veredicto de un consejo
