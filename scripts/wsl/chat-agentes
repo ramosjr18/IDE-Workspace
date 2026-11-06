@@ -1,0 +1,12 @@
+#!/bin/bash
+# Abre la versión estable de Chat de agentes (/opt/chat-agentes/actual).
+# Solo cambia si se instala otra versión; los cambios en el repo no le afectan.
+# Se instala en /usr/local/bin/chat-agentes (ver docs/version-estable-wsl.md).
+cd ~
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+# Seguir el tema de Windows: GTK (y con él prefers-color-scheme de la app) no lo ve por sí solo.
+reg=/mnt/c/Windows/System32/reg.exe
+if [ -x "$reg" ] && "$reg" query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme 2>/dev/null | grep -q '0x0'; then
+  export GTK_THEME=Adwaita:dark
+fi
+exec /opt/chat-agentes/actual/chat-agentes "$@"
