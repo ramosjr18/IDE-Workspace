@@ -766,6 +766,10 @@ Uso:
                             código original y pizarra actual en texto, con los cambios del usuario
   agentes pizarra --imagen <id|título|proyecto> <ruta.png>
                             exporta la pizarra a PNG (necesita la app abierta en este proyecto)
+  agentes consejo --tema "<tema>" [--participantes claude,codex:abogado] [--moderador claude] [--resultado adr|politica|nota] [--contexto archivo]
+                            convoca un consejo real (pestaña Consejo, solo lectura) para evaluar opciones o decidir
+  agentes consejo --estado <id>
+                            fase, tarjetas, síntesis y veredicto de un consejo
 
 --worktree crea (o reutiliza) .claude/worktrees/<nombre> en una rama nueva desde HEAD
 (agentes/<nombre> si no se indica --branch) y ejecuta la CLI ahí.
@@ -791,6 +795,55 @@ fn print_pane(p: &Pane) {
     println!("{}\t{}\t{}\t{}\t{}\t{}", p.id, state, p.name, p.account.as_deref().unwrap_or("principal"), p.worktree.as_deref().unwrap_or("-"), p.log);
     for r in &p.relays {
         println!("\trelevo: {r}");
+    }
+}
+
+fn print_council(c: &crate::council::Council) {
+    println!("# Consejo: {}", c.topic);
+    println!("id: {} · fase: {} · ronda: {}", c.id, c.phase, c.round);
+    if let Some(e) = &c.error {
+        println!("Error: {e}");
+    }
+    match c.phase.as_str() {
+        "diverge" | "contrast" | "converge" | "judge" => println!("En marcha: aún no hay resultado; vuelve a consultar más tarde."),
+        "review" => println!("Terminado: el usuario tiene que revisar y aprobar el documento."),
+        "approved" => {
+            println!("Aprobado por el usuario");
+            if let Some(p) = &c.document_path {
+                println!("Documento guardado en {p}");
+            }
+        }
+        "cancelled" => println!("Cancelado"),
+        _ => println!("Falló"),
+    }
+    println!();
+    println!("## Tarjetas");
+    for card in &c.cards {
+        let text = card.text.replace("\r\n", " ").replace('\n', " ").replace('\r', " ");
+        let reply = if let Some(rt) = &card.reply_to { format!(" (responde a {rt})") } else { String::new() };
+        println!("- [{}] {} · {}{}: {}", card.id, card.author_name, card.kind, reply, text);
+    }
+    if let Some(s) = &c.synthesis {
+        println!();
+        println!("## Acuerdos");
+        for a in &s.agreements {
+            println!("- {a}");
+        }
+        println!();
+        println!("## Abierto");
+        for o in &s.open {
+            println!("- {o}");
+        }
+        println!();
+        println!("## Borrador del documento");
+        println!("{}", s.document);
+    }
+    if let Some(v) = c.verdicts.last() {
+        println!();
+        println!("## Evaluador: {}", v.decision);
+        for r in &v.reasons {
+            println!("- {r}");
+        }
     }
 }
 
@@ -822,6 +875,8 @@ struct Reply2 {
     panes: Option<Vec<PaneOut>>,
     #[serde(default)]
     board: Option<String>,
+    #[serde(default)]
+    council: Option<crate::council::Council>,
 }
 
 #[derive(Deserialize)]
@@ -1022,6 +1077,57 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
             };
             let r = request(serde_json::json!({ "cmd": "board", "cwd": cwd, "title": title, "format": format, "text": text }))?;
             println!("Diagrama en la pizarra del usuario (id {}).", r.board.unwrap_or_default());
+            Ok(0)
+        }
+        "consejo" => {
+            fn val(it: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
+                it.next().ok_or_else(|| format!("Falta el valor de {name}"))
+            }
+            let mut tema = String::new();
+            let mut participantes: Vec<String> = Vec::new();
+            let mut moderador = String::new();
+            let mut resultado = String::new();
+            let mut contexto = String::new();
+            let mut estado = String::new();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--tema" => tema = val(&mut it, "--tema")?,
+                    "--participantes" => {
+                        let p = val(&mut it, "--participantes")?;
+                        participantes = p.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    }
+                    "--moderador" => moderador = val(&mut it, "--moderador")?,
+                    "--resultado" => resultado = val(&mut it, "--resultado")?,
+                    "--contexto" => {
+                        let f = val(&mut it, "--contexto")?;
+                        contexto = std::fs::read_to_string(&f).map_err(|e| format!("No se pudo leer {f}: {e}"))?;
+                    }
+                    "--estado" => estado = val(&mut it, "--estado")?,
+                    "-h" | "--help" => {
+                        println!("{HELP}");
+                        return Ok(0);
+                    }
+                    other => return Err(format!("Opción desconocida: {other}")),
+                }
+            }
+            let conversation_id = std::env::var("AGENTES_CONVERSACION").ok().filter(|s| !s.is_empty());
+            if estado.is_empty() {
+                if tema.is_empty() {
+                    return Err("Uso: agentes consejo --tema \"…\" [--participantes claude,codex:abogado] [--moderador claude] [--resultado adr|politica|nota] [--contexto archivo]".into());
+                }
+                let r = request(serde_json::json!({ "cmd": "council", "cwd": cwd, "topic": tema, "members": participantes, "moderator": moderador, "output": resultado, "context": contexto, "conversationId": conversation_id }))?;
+                let c = r.council.ok_or("Sin respuesta")?;
+                println!("Consejo convocado: {}", c.id);
+                println!("Tema: {}", c.topic);
+                let ms: Vec<String> = c.members.iter().map(|m| format!("{} ({})", m.agent_name, m.role_name)).collect();
+                println!("Participantes: {}", ms.join(", "));
+                println!("Lo ves en la pestaña Consejo de la app. Trabajan en solo lectura; el documento solo se guarda en el repo si el usuario lo aprueba.");
+                println!("Consulta el resultado con: agentes consejo --estado {}", c.id);
+            } else {
+                let r = request(serde_json::json!({ "cmd": "councilStatus", "id": estado }))?;
+                let c = r.council.ok_or("Sin respuesta")?;
+                print_council(&c);
+            }
             Ok(0)
         }
         "wait" | "kill" => {
