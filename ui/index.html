@@ -2627,6 +2627,14 @@
     return box;
   }
 
+  // `agentes consejo` desde el chat: se abre en la pestaña Consejo, como si se hubiera convocado desde el diálogo.
+  listen('council-open', async (e) => {
+    if (!project || e.payload.project !== project.path) return;
+    if (store.get('panel') === 'off') { store.set('panel', 'on'); applyPanel(); }
+    setTab('council');
+    await openCouncil(e.payload.id);
+  });
+
   // Cambios que llegan de Rust mientras el consejo trabaja
   listen('council-update', (e) => {
     const c = e.payload;

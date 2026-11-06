@@ -15,12 +15,13 @@ pub struct Workflow {
 }
 
 /// Nota que reciben siempre los agentes del chat: si delegan en otro proceso, que se vea en la vista Agentes.
-pub const LAUNCHER_NOTE: &str = "[Nota de la app «Chat de agentes»] Si lanzas otros agentes CLI (codex, opencode, claude, agy, gemini…) para que trabajen en paralelo, hazlo con `agentes run` en vez de `nohup`/`&`: así cada uno sale en su propia terminal en la vista «Agentes» del usuario. `agentes run --help` explica el uso; `agentes status` y `agentes wait <id>` dicen quién terminó y con qué código. Si el usuario pide un diagrama, un esquema, un plan visual o algo que se entienda mejor dibujado, escríbelo en Mermaid y envíalo con `agentes pizarra --title \"<título>\" diagrama.mmd` (o por la entrada estándar): se le abre en su pizarra. Un bloque ```mermaid en tu respuesta también llega a la pizarra. Para LEER la pizarra (diagramas que haya y los cambios que el usuario hizo a mano), usa `agentes pizarra --listar` y `agentes pizarra --leer <id|título|proyecto>`; consúltala antes de escribir un plan o de responder sobre algo que pueda estar dibujado allí.";
+pub const LAUNCHER_NOTE: &str = "[Nota de la app «Chat de agentes»] Si lanzas otros agentes CLI (codex, opencode, claude, agy, gemini…) para que trabajen en paralelo, hazlo con `agentes run` en vez de `nohup`/`&`: así cada uno sale en su propia terminal en la vista «Agentes» del usuario. `agentes run --help` explica el uso; `agentes status` y `agentes wait <id>` dicen quién terminó y con qué código. Si el usuario pide un diagrama, un esquema, un plan visual o algo que se entienda mejor dibujado, escríbelo en Mermaid y envíalo con `agentes pizarra --title \"<título>\" diagrama.mmd` (o por la entrada estándar): se le abre en su pizarra. Un bloque ```mermaid en tu respuesta también llega a la pizarra. Para LEER la pizarra (diagramas que haya y los cambios que el usuario hizo a mano), usa `agentes pizarra --listar` y `agentes pizarra --leer <id|título|proyecto>`; consúltala antes de escribir un plan o de responder sobre algo que pueda estar dibujado allí. Si el usuario pide un consejo, una deliberación o que varios agentes evalúen opciones o decidan algo, convoca el Consejo de la app con `agentes consejo --tema \"…\"` (participantes en solo lectura, sale en su pestaña Consejo); nunca lo simules lanzando agentes con `agentes run`, que escriben en el repo. Consulta el resultado con `agentes consejo --estado <id>`.";
 
 const TEAM: &str = r#"[Forma de trabajar: Equipo en worktrees]
 Trabajas como orquestador: no implementas tú, repartes el trabajo entre otros agentes CLI y lo supervisas. Sigue estos pasos:
 
 1. Plan. Si no hay un plan escrito y decidido por el usuario, escríbelo (en docs/) y pide su decisión antes de lanzar nada. Commitéalo: los worktrees salen de HEAD y un plan sin commitear no lo ven.
+Decidir no es implementar: si hay que evaluar alternativas o tomar una decisión antes del plan (o el usuario pide un consejo), convoca el Consejo con `agentes consejo --tema "…"` y espera su resultado; no lances agentes con `agentes run` para deliberar ni les pidas que escriban documentos en el repo.
 2. Carriles. Divide el trabajo en zonas de código disjuntas (p. ej. backend ↔ frontend), una por agente, para que no se pisen.
 3. Brief por carril, por escrito, siempre en este orden: el problema con las palabras del usuario · su zona exclusiva y qué está prohibido tocar, con el porqué · el contrato con los demás carriles cerrado por adelantado (rutas, códigos de error, nombres de campo) · la línea base de tests medida · una puerta que se cierra con ficheros reales, no con «compila» · y «si ves que lo correcto es otra cosa, párate y escríbelo en ultimo-mensaje.md en vez de improvisar». Pide un commit por paso.
 4. Cuota. Antes de lanzar, comprueba que cada CLI responde a una tarea real corta (no basta con «di OK»). Si una no tiene cuota, pasa su brief a otra.
@@ -104,6 +105,12 @@ mod tests {
         assert_eq!((w.name.as_str(), w.instructions.as_str()), ("simple", "Solo instrucciones."));
         let w = parse("fm", "---\nname: Con front matter\n---\nCuerpo");
         assert_eq!((w.name.as_str(), w.instructions.as_str()), ("Con front matter", "Cuerpo"));
+    }
+
+    #[test]
+    fn el_consejo_se_convoca_con_agentes_consejo() {
+        assert!(LAUNCHER_NOTE.contains("agentes consejo --tema"));
+        assert!(TEAM.contains("agentes consejo --tema"));
     }
 
     #[test]
