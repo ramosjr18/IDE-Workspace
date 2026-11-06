@@ -101,6 +101,16 @@ pub fn full_path() -> &'static str {
     })
 }
 
+tokio::task_local! {
+    /// Conversación del chat que está ejecutando el agente: sus procesos hijos la reciben en AGENTES_CONVERSACION.
+    static CONVERSATION: String;
+}
+
+/// Ejecuta `f` con la conversación `id` activa (los procesos que lance llevarán AGENTES_CONVERSACION).
+pub async fn conversation_scope<F: std::future::Future>(id: String, f: F) -> F::Output {
+    CONVERSATION.scope(id, f).await
+}
+
 /// Variables de entorno para los procesos hijos.
 pub fn child_env() -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().filter(|(k, _)| !k.eq_ignore_ascii_case("PATH")).collect();
@@ -115,6 +125,12 @@ pub fn child_env() -> HashMap<String, String> {
     // Cuenta activa de la tarea (varias cuentas por CLI): CLAUDE_CONFIG_DIR, CODEX_HOME…
     for (k, v) in crate::accounts::active_env() {
         env.insert(k, v);
+    }
+    // Conversación del chat que lanza el proceso: `agentes run` / `agentes consejo` la mandan a la app para avisarla al terminar.
+    if let Ok(id) = CONVERSATION.try_with(|c| c.clone()) {
+        if !id.is_empty() {
+            env.insert("AGENTES_CONVERSACION".into(), id);
+        }
     }
     env
 }

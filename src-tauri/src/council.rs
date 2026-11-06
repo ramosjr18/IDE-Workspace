@@ -884,6 +884,13 @@ pub fn launch(app: AppHandle, runs: Arc<Runs>, council: Council, plan: Plan) -> 
         if let Err(e) = outcome {
             fail(&app, &shared, cancelled, e).await;
         }
+        // Consejo convocado desde una conversación del chat (`agentes consejo`): se le avisa de que terminó.
+        let c = shared.lock().await.clone();
+        if let Some(conv) = c.conversation_id.clone().filter(|s| !s.is_empty()) {
+            let _ = app.emit("council-finished", serde_json::json!({
+                "conversation": conv, "id": c.id, "topic": c.topic, "phase": c.phase, "error": c.error,
+            }));
+        }
     });
     Ok(())
 }
