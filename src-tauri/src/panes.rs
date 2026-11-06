@@ -510,6 +510,26 @@ enum Request {
         format: String,
         text: String,
     },
+    /// `agentes consejo --tema …`: convoca un consejo real de la app (solo lectura) y lo muestra en la pestaña Consejo.
+    Council {
+        cwd: String,
+        topic: String,
+        /// Participantes «cli» o «cli:rol»; vacío = las CLIs listas (hasta 3).
+        #[serde(default)]
+        members: Vec<String>,
+        #[serde(default)]
+        moderator: String,
+        /// adr | politica | nota (por defecto nota)
+        #[serde(default)]
+        output: String,
+        #[serde(default)]
+        context: String,
+        #[serde(default)]
+        #[serde(rename = "conversationId")]
+        conversation_id: Option<String>,
+    },
+    /// `agentes consejo --estado <id>`: el consejo tal como está (fase, tarjetas, síntesis).
+    CouncilStatus { id: String },
     /// `agentes pizarra --imagen`: PNG de un diagrama o de la pizarra libre.
     Image { cwd: String, which: String, path: String },
 }
@@ -533,6 +553,8 @@ struct Reply {
     panes: Option<Vec<Pane>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     board: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    council: Option<crate::council::Council>,
 }
 
 fn err(e: impl Into<String>) -> Reply {
@@ -578,11 +600,52 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
             match crate::project::diagram_create(&root, &title, &format, &text) {
                 Ok(d) => {
                     let _ = app.emit("board-add", serde_json::json!({ "project": root.to_string_lossy(), "id": d.id, "title": d.title }));
-                    Reply { ok: true, error: None, pane: None, panes: None, board: Some(d.id) }
+                    Reply { ok: true, board: Some(d.id), ..Default::default() }
                 }
                 Err(e) => err(e),
             }
         }
+        Request::Council { cwd, topic, members, moderator, output, context, conversation_id } => {
+            let root = repo_root(Path::new(&cwd));
+            // CLIs listas ahora mismo (instaladas y con sesión iniciada).
+            let mut ready: Vec<String> = Vec::new();
+            for a in crate::agents::AGENTS {
+                if crate::agents::status(a).await == "ready" {
+                    ready.push(a.id.to_string());
+                }
+            }
+            // Roles por defecto, en este orden, para quien no indique el suyo.
+            const ROLES: [&str; 4] = ["arquitecto", "abogado", "coste", "usuario"];
+            let pedidos: Vec<String> = if members.is_empty() { ready.iter().take(3).cloned().collect() } else { members };
+            let mut nuevos = Vec::new();
+            for (i, m) in pedidos.iter().enumerate() {
+                let (agent, role) = match m.split_once(':') {
+                    Some((a, r)) => (a.trim().to_string(), r.trim().to_string()),
+                    None => (m.trim().to_string(), ROLES[i % ROLES.len()].to_string()),
+                };
+                if !ready.contains(&agent) {
+                    return err(format!("La CLI «{agent}» no está lista (instalada y con sesión). Listas: {}", ready.join(", ")));
+                }
+                nuevos.push(crate::council::NewMember { agent, role });
+            }
+            let moderator = if moderator.trim().is_empty() { nuevos.first().map(|m| m.agent.clone()).unwrap_or_default() } else { moderator.trim().to_string() };
+            let output = if output.trim().is_empty() { "nota".to_string() } else { output.trim().to_string() };
+            let judge = crate::council::Judge { enabled: true, pool: ready.clone(), max_rounds: 2, used_rounds: 0 };
+            let c = match crate::council::create(&root, conversation_id, topic, output, context, nuevos, moderator, judge) {
+                Ok(c) => c,
+                Err(e) => return err(e),
+            };
+            let runs = app.state::<Arc<crate::council::Runs>>().inner().clone();
+            if let Err(e) = crate::council::launch(app.clone(), runs, c.clone(), crate::council::Plan::Full) {
+                return err(e);
+            }
+            let _ = app.emit("council-open", serde_json::json!({ "project": root.to_string_lossy(), "id": c.id }));
+            Reply { ok: true, council: Some(c), ..Default::default() }
+        }
+        Request::CouncilStatus { id } => match crate::council::get(&id) {
+            Some(c) => Reply { ok: true, council: Some(c), ..Default::default() },
+            None => err(format!("No hay ningún consejo {id}")),
+        },
         Request::Image { cwd, which, path } => {
             let root = repo_root(Path::new(&cwd));
             let id = match crate::project::diagram_resolve(&root, &which) {
@@ -703,6 +766,10 @@ Uso:
                             código original y pizarra actual en texto, con los cambios del usuario
   agentes pizarra --imagen <id|título|proyecto> <ruta.png>
                             exporta la pizarra a PNG (necesita la app abierta en este proyecto)
+  agentes consejo --tema \"<tema>\" [--participantes claude,codex:abogado] [--moderador claude] [--resultado adr|politica|nota] [--contexto archivo]
+                            convoca un consejo real (pestaña Consejo, solo lectura) para evaluar opciones o decidir
+  agentes consejo --estado <id>
+                            fase, tarjetas, síntesis y veredicto de un consejo
 
 --worktree crea (o reutiliza) .claude/worktrees/<nombre> en una rama nueva desde HEAD
 (agentes/<nombre> si no se indica --branch) y ejecuta la CLI ahí.
@@ -728,6 +795,55 @@ fn print_pane(p: &Pane) {
     println!("{}\t{}\t{}\t{}\t{}\t{}", p.id, state, p.name, p.account.as_deref().unwrap_or("principal"), p.worktree.as_deref().unwrap_or("-"), p.log);
     for r in &p.relays {
         println!("\trelevo: {r}");
+    }
+}
+
+fn print_council(c: &crate::council::Council) {
+    println!("# Consejo: {}", c.topic);
+    println!("id: {} · fase: {} · ronda: {}", c.id, c.phase, c.round);
+    if let Some(e) = &c.error {
+        println!("Error: {e}");
+    }
+    match c.phase.as_str() {
+        "diverge" | "contrast" | "converge" | "judge" => println!("En marcha: aún no hay resultado; vuelve a consultar más tarde."),
+        "review" => println!("Terminado: el usuario tiene que revisar y aprobar el documento."),
+        "approved" => {
+            println!("Aprobado por el usuario");
+            if let Some(p) = &c.document_path {
+                println!("Documento guardado en {p}");
+            }
+        }
+        "cancelled" => println!("Cancelado"),
+        _ => println!("Falló"),
+    }
+    println!();
+    println!("## Tarjetas");
+    for card in &c.cards {
+        let text = card.text.replace("\r\n", " ").replace('\n', " ").replace('\r', " ");
+        let reply = if let Some(rt) = &card.reply_to { format!(" (responde a {rt})") } else { String::new() };
+        println!("- [{}] {} · {}{}: {}", card.id, card.author_name, card.kind, reply, text);
+    }
+    if let Some(s) = &c.synthesis {
+        println!();
+        println!("## Acuerdos");
+        for a in &s.agreements {
+            println!("- {a}");
+        }
+        println!();
+        println!("## Abierto");
+        for o in &s.open {
+            println!("- {o}");
+        }
+        println!();
+        println!("## Borrador del documento");
+        println!("{}", s.document);
+    }
+    if let Some(v) = c.verdicts.last() {
+        println!();
+        println!("## Evaluador: {}", v.decision);
+        for r in &v.reasons {
+            println!("- {r}");
+        }
     }
 }
 
@@ -759,6 +875,8 @@ struct Reply2 {
     panes: Option<Vec<PaneOut>>,
     #[serde(default)]
     board: Option<String>,
+    #[serde(default)]
+    council: Option<crate::council::Council>,
 }
 
 #[derive(Deserialize)]
@@ -959,6 +1077,57 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
             };
             let r = request(serde_json::json!({ "cmd": "board", "cwd": cwd, "title": title, "format": format, "text": text }))?;
             println!("Diagrama en la pizarra del usuario (id {}).", r.board.unwrap_or_default());
+            Ok(0)
+        }
+        "consejo" => {
+            fn val(it: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
+                it.next().ok_or_else(|| format!("Falta el valor de {name}"))
+            }
+            let mut tema = String::new();
+            let mut participantes: Vec<String> = Vec::new();
+            let mut moderador = String::new();
+            let mut resultado = String::new();
+            let mut contexto = String::new();
+            let mut estado = String::new();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--tema" => tema = val(&mut it, "--tema")?,
+                    "--participantes" => {
+                        let p = val(&mut it, "--participantes")?;
+                        participantes = p.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    }
+                    "--moderador" => moderador = val(&mut it, "--moderador")?,
+                    "--resultado" => resultado = val(&mut it, "--resultado")?,
+                    "--contexto" => {
+                        let f = val(&mut it, "--contexto")?;
+                        contexto = std::fs::read_to_string(&f).map_err(|e| format!("No se pudo leer {f}: {e}"))?;
+                    }
+                    "--estado" => estado = val(&mut it, "--estado")?,
+                    "-h" | "--help" => {
+                        println!("{HELP}");
+                        return Ok(0);
+                    }
+                    other => return Err(format!("Opción desconocida: {other}")),
+                }
+            }
+            let conversation_id = std::env::var("AGENTES_CONVERSACION").ok().filter(|s| !s.is_empty());
+            if estado.is_empty() {
+                if tema.is_empty() {
+                    return Err("Uso: agentes consejo --tema \"…\" [--participantes claude,codex:abogado] [--moderador claude] [--resultado adr|politica|nota] [--contexto archivo]".into());
+                }
+                let r = request(serde_json::json!({ "cmd": "council", "cwd": cwd, "topic": tema, "members": participantes, "moderator": moderador, "output": resultado, "context": contexto, "conversationId": conversation_id }))?;
+                let c = r.council.ok_or("Sin respuesta")?;
+                println!("Consejo convocado: {}", c.id);
+                println!("Tema: {}", c.topic);
+                let ms: Vec<String> = c.members.iter().map(|m| format!("{} ({})", m.agent_name, m.role_name)).collect();
+                println!("Participantes: {}", ms.join(", "));
+                println!("Lo ves en la pestaña Consejo de la app. Trabajan en solo lectura; el documento solo se guarda en el repo si el usuario lo aprueba.");
+                println!("Consulta el resultado con: agentes consejo --estado {}", c.id);
+            } else {
+                let r = request(serde_json::json!({ "cmd": "councilStatus", "id": estado }))?;
+                let c = r.council.ok_or("Sin respuesta")?;
+                print_council(&c);
+            }
             Ok(0)
         }
         "wait" | "kill" => {

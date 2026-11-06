@@ -108,6 +108,8 @@ Se convoca escribiendo `/consejo tema` en el chat, desde **☰ → Convocar cons
 - **Moderador**: resume y redacta; mejor uno que no participe.
 - **Contexto**: la conversación actual, que puedes editar antes de empezar.
 
+También puedes pedírselo al agente del chat: «lanza un consejo sobre si conviene X». El agente lo convoca con `agentes consejo --tema "…"` (opcional: `--participantes claude,codex:abogado`, `--moderador`, `--resultado adr|politica|nota`, `--contexto archivo`; sin participantes usa hasta tres CLIs listas) y se abre en la pestaña **Consejo** igual que si lo hubieras convocado tú. Los participantes trabajan en solo lectura: no crean ramas ni escriben en el repo, y el documento solo se guarda cuando lo apruebas. El agente lee el resultado con `agentes consejo --estado <id>` para contestarte. Las formas de trabajar le piden que no simule un consejo lanzando agentes con `agentes run`.
+
 Fases, en el tablero de la pestaña **Consejo** (se abre ampliado):
 
 1. **Divergir**: cada agente da su propuesta sin ver la de los demás.
