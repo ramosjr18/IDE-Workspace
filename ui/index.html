@@ -12,6 +12,7 @@
 <script src="vendor/monaco/vs/loader.js"></script>
 <script src="consejo-coste.js"></script>
 <script src="maquetas.js"></script>
+<script src="comandos.js"></script>
 <style>
   :root {
     --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -380,6 +381,13 @@
   #termDialog { width: min(900px, calc(100vw - 32px)); }
   #term { height: 440px; padding: 8px; background: #111; }
   .hint { font-size: 13px; color: var(--muted); padding: 8px 16px 12px; margin: 0; }
+  #form { position: relative; }
+  .slash-menu { position: absolute; left: 0; right: 0; bottom: 100%; margin-bottom: 6px; max-height: 280px; overflow-y: auto; background: var(--panel, #252526); border: 1px solid var(--border, #3c3c3c); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.35); z-index: 20; padding: 4px; }
+  .slash-item { display: flex; gap: 10px; align-items: baseline; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+  .slash-item.active, .slash-item:hover { background: rgba(80,130,255,.18); }
+  .slash-item b { font-family: ui-monospace, monospace; white-space: nowrap; }
+  .slash-item .args { opacity: .6; font-family: ui-monospace, monospace; white-space: nowrap; }
+  .slash-item .desc { opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -431,6 +439,7 @@
     <div id="chatView">
       <div id="messages"></div>
       <form id="form">
+        <div id="slashMenu" class="slash-menu" role="listbox" hidden></div>
         <textarea id="input" placeholder="Escribe… (Enter envía · Shift+Enter salto de línea · ↑ ↓ mensajes anteriores)"></textarea>
         <button id="send" class="primary" type="submit">Enviar</button>
       </form>
@@ -854,6 +863,66 @@
     $('input').setSelectionRange(end, end);
     return true;
   }
+
+  // ---------- Menú de comandos «/» (IDE-27) ----------
+  let comandos = Comandos.build(); // de serie; se completa con los agentes propios y las plantillas al abrirlo
+  let comandosCargados = 0; // cuándo se cargaron los propios y las plantillas (se recargan cada 30 s como mucho)
+  let slashItems = []; // comandos que se ven ahora en el menú
+  let slashActive = 0; // índice del resaltado
+  async function cargarComandos() {
+    if (!project || Date.now() - comandosCargados < 30000) return;
+    comandosCargados = Date.now();
+    const propios = await invoke('own_agents_list').catch(() => []);
+    const cfg = await invoke('council_config_get').catch(() => null);
+    comandos = Comandos.build(propios || [], (cfg && cfg.templates) || []);
+  }
+  function pintarSlash() {
+    const menu = $('slashMenu');
+    slashItems = Comandos.filter(comandos, $('input').value);
+    menu.hidden = slashItems.length === 0;
+    if (menu.hidden) return;
+    slashActive = Math.min(slashActive, slashItems.length - 1);
+    menu.innerHTML = '';
+    slashItems.forEach((c, i) => {
+      const row = document.createElement('div');
+      row.className = 'slash-item' + (i === slashActive ? ' active' : '');
+      row.setAttribute('role', 'option');
+      const b = document.createElement('b'); b.textContent = '/' + c.name;
+      const a = document.createElement('span'); a.className = 'args'; a.textContent = c.args || '';
+      const d = document.createElement('span'); d.className = 'desc'; d.textContent = c.description;
+      row.append(b, a, d);
+      // mousedown y no click: así la caja no pierde el foco antes de elegir.
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); elegirSlash(i); });
+      menu.appendChild(row);
+    });
+  }
+  // Completa la caja con el comando elegido; el usuario escribe después sus argumentos.
+  function elegirSlash(i) {
+    const c = slashItems[i];
+    if (!c) return;
+    $('input').value = '/' + c.name + ' ';
+    $('slashMenu').hidden = true;
+    $('input').focus();
+  }
+  $('input').addEventListener('input', async () => {
+    if ($('input').value.startsWith('/')) { await cargarComandos(); slashActive = 0; }
+    pintarSlash();
+  });
+  $('input').addEventListener('blur', () => { $('slashMenu').hidden = true; });
+  // Con el menú abierto, las flechas, Tab, Enter y Esc son suyas (antes que el historial y el envío): se registra en captura.
+  $('input').addEventListener('keydown', (e) => {
+    if ($('slashMenu').hidden) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      slashActive = (slashActive + (e.key === 'ArrowDown' ? 1 : -1) + slashItems.length) % slashItems.length;
+      pintarSlash();
+    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      elegirSlash(slashActive);
+    } else if (e.key === 'Escape') {
+      $('slashMenu').hidden = true;
+    } else return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
 
   $('input').addEventListener('keydown', (e) => {
     const box = $('input');
