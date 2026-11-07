@@ -64,6 +64,21 @@ Las respuestas de los agentes se ven en Markdown: tablas, listas y bloques de c�
 
 Codex, OpenCode, Gemini y Copilot se instalan con npm, así que necesitan Node.js.
 
+### Comandos «/»
+
+Al escribir `/` al principio del mensaje se abre la lista de comandos, que se filtra según escribes. ↑/↓ para moverte, Tab o Enter para elegir, Esc para cerrar. Cada comando vale solo para ese mensaje: no cambia la forma de trabajar elegida en el menú. En la conversación se guarda lo que escribiste, con el comando resaltado.
+
+| Comando | Qué hace |
+| --- | --- |
+| `/equipo <tarea>` | Reparte la tarea entre varios agentes en worktrees y los lanza ya, sin pedir aprobación del plan |
+| `/consejo <tema>` | Convoca un consejo de agentes (abre el diálogo) |
+| `/diagrama <qué dibujar>` | Dibuja un diagrama en Mermaid y lo abre en la pizarra |
+| `/pizarra [pregunta]` | El agente lee la pizarra abierta y la tiene en cuenta |
+| `/maqueta <tema>` | Maqueta HTML en `docs/maquetas/` |
+| `/directo <mensaje>` | Solo este mensaje, sin forma de trabajar |
+
+También salen tus agentes propios activos (`/<id> <mensaje>`) y tus plantillas de consejo (`/consejo-<plantilla>`). Un `/texto` que no sea un comando se envía como mensaje normal.
+
 ## Uso de los agentes
 
 La pestaña **Uso** del panel derecho muestra en una sola vista una tarjeta por cada CLI instalada:
