@@ -158,7 +158,7 @@ pub fn ensure_worktree(root: &Path, name: &str, branch: Option<&str>) -> Result<
         return Err("La carpeta del proyecto no es un repositorio git: no se pueden crear worktrees".into());
     }
     let path = root.join(".claude").join("worktrees").join(name);
-    ensure_excluded(root, &[".claude/worktrees/", "agente.log", "node_modules", ".venv"]);
+    ensure_excluded(root, &[".claude/worktrees/", "agente.log", "node_modules", ".venv", ".agentes/"]);
     if path.exists() {
         let b = git(&path, &["branch", "--show-current"]).unwrap_or_default();
         return Ok((path, b));
