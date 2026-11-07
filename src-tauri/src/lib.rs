@@ -14,6 +14,7 @@ mod agents;
 mod council;
 mod env;
 mod escena;
+mod objetivo;
 mod own_agents;
 mod panes;
 mod project;
@@ -580,6 +581,26 @@ fn diagram_get(current: State<'_, CurrentProject>, id: String) -> Result<Option<
     Ok(project::diagram_get(&panes::repo_root(&current.get()?), &id))
 }
 
+/// Objetivo y checklist de una conversación (vacío si aún no tiene).
+#[tauri::command]
+fn objective_get(conversation_id: String) -> Result<objetivo::Objetivo, String> {
+    objetivo::load(&conversation_id)
+}
+
+/// Guarda el objetivo que edita el usuario en la pestaña Objetivo.
+#[tauri::command]
+fn objective_save(app: AppHandle, objective: objetivo::Objetivo) -> Result<objetivo::Objetivo, String> {
+    let mut o = objective;
+    o.goal = o.goal.trim().to_string();
+    o.items.retain(|i| !i.text.trim().is_empty());
+    if o.items.len() > 200 {
+        return Err("Demasiados puntos".into());
+    }
+    objetivo::store(&mut o)?;
+    let _ = app.emit("objective-changed", serde_json::json!({ "conversation": o.conversation }));
+    Ok(o)
+}
+
 /// La ventana entrega el PNG pedido por `agentes pizarra --imagen` (o el error si no pudo hacerlo).
 #[tauri::command]
 fn board_image_done(req: String, data: Option<Vec<u8>>, error: Option<String>) {
@@ -811,6 +832,8 @@ pub fn run() {
             project_board_save,
             diagrams_list,
             diagram_get,
+            objective_get,
+            objective_save,
             board_image_done,
             diagram_save,
             diagram_create,
