@@ -9,4 +9,8 @@ reg=/mnt/c/Windows/System32/reg.exe
 if [ -x "$reg" ] && "$reg" query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme 2>/dev/null | grep -q '0x0'; then
   export GTK_THEME=Adwaita:dark
 fi
+# En WSLg, GTK usa la disposición de GNOME («appmenu:close»): solo el botón de cerrar. Se añaden minimizar y maximizar.
+if command -v gsettings >/dev/null && [ "$(gsettings get org.gnome.desktop.wm.preferences button-layout 2>/dev/null)" = "'appmenu:close'" ]; then
+  gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close' 2>/dev/null
+fi
 exec /opt/chat-agentes/actual/chat-agentes "$@"

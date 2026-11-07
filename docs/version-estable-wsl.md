@@ -46,5 +46,5 @@ Las versiones instaladas se quedan en `/opt/chat-agentes/`. Desde Windows:
 
 ## Cómo está montada
 
-- `/usr/local/bin/chat-agentes` (copia de `scripts/wsl/chat-agentes`): pone `WEBKIT_DISABLE_DMABUF_RENDERER=1`, que evita la ventana en blanco en WSLg, y el tema oscuro de GTK si Windows lo usa. Después abre `/opt/chat-agentes/actual/chat-agentes`.
+- `/usr/local/bin/chat-agentes` (copia de `scripts/wsl/chat-agentes`): pone `WEBKIT_DISABLE_DMABUF_RENDERER=1`, que evita la ventana en blanco en WSLg, y el tema oscuro de GTK si Windows lo usa. También pone los botones de minimizar y maximizar: en WSLg, GTK usa la disposición de GNOME, que solo trae el de cerrar. Después abre `/opt/chat-agentes/actual/chat-agentes`.
 - Las CLIs (claude, codex, copilot, gh, az…), git y sus credenciales están configuradas en WSL para el tu usuario de WSL y comparten sesión con las de Windows.
