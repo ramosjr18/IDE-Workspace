@@ -36,3 +36,7 @@ src-tauri/gen/
 
 # Copiado de node_modules al compilar (npm run vendor)
 ui/vendor/
+
+# Pruebas locales ajenas a este repo (experimentos con el Spark)
+docs/flujo-tickets-spark.md
+tests/spark-parallel/
