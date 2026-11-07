@@ -402,6 +402,20 @@
   .slash-item .args { opacity: .6; font-family: ui-monospace, monospace; white-space: nowrap; }
   .slash-item .desc { opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cmd-chip { display: inline-block; padding: 0 6px; margin-right: 4px; border-radius: 4px; background: rgba(255,255,255,.22); font-family: ui-monospace, monospace; }
+  .goal-body { padding: 12px 16px; overflow-y: auto; }
+  .goal-text { width: 100%; font-size: 15px; font-weight: 600; padding: 8px 10px; margin-bottom: 10px; }
+  .goal-items { list-style: none; margin: 0 0 10px; padding: 0; }
+  .goal-items li { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+  .goal-items li.done .goal-item-text { text-decoration: line-through; opacity: .6; }
+  .goal-item-text { flex: 1; }
+  .goal-chip { font-family: ui-monospace, monospace; font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); }
+  a.goal-chip { cursor: pointer; text-decoration: underline; }
+  .goal-items li button { opacity: .5; }
+  .goal-items li button:hover { opacity: 1; }
+  .goal-add { display: flex; gap: 6px; }
+  .goal-add #goalNew { flex: 1; }
+  .goal-ticket { width: 120px; }
+  .goal-hint { margin-top: 12px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -467,10 +481,27 @@
   <aside id="panel">
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tabTree" class="tab active needs-project">Archivos <span id="treeCount" class="count"></span> <span id="fileTabName" class="count"></span></button>
+      <button type="button" role="tab" id="tabGoal" class="tab needs-project">Objetivo <span id="goalCount" class="count"></span></button>
       <button type="button" role="tab" id="tabCouncil" class="tab needs-project">Consejo <span id="councilTabState" class="count"></span></button>
       <button type="button" role="tab" id="tabBoard" class="tab needs-project">Pizarra</button>
       <button type="button" role="tab" id="tabUsage" class="tab">Uso</button>
       <button type="button" role="tab" id="tabAgents" class="tab needs-project">Agentes <span id="agentsCount" class="count"></span></button>
+    </div>
+    <div id="goalView" class="view goal-view" hidden>
+      <div class="toolbar"><span class="section-title">Objetivo de la sesión</span><span id="goalUpdated" class="muted"></span></div>
+      <div class="goal-body">
+        <p id="goalEmpty" class="muted"></p>
+        <div id="goalEditor" hidden>
+          <input id="goalText" class="goal-text" placeholder="¿Qué quieres conseguir en esta sesión? (opcional)" autocomplete="off">
+          <ul id="goalItems" class="goal-items"></ul>
+          <form id="goalAdd" class="goal-add">
+            <input id="goalNew" placeholder="Añadir un punto…" autocomplete="off">
+            <input id="goalTicket" class="goal-ticket" placeholder="Ticket (opcional)" autocomplete="off">
+            <button type="submit">Añadir</button>
+          </form>
+          <p class="muted goal-hint">Los agentes también la leen y la marcan con <code>agentes tareas</code>. Usa <code>/objetivo …</code> en el chat para que el agente la prepare.</p>
+        </div>
+      </div>
     </div>
     <div id="agentsView" class="view" hidden>
       <div class="toolbar">
@@ -782,6 +813,7 @@
   async function loadConversation(id) {
     conversationId = id || null;
     store.set(convKey(), conversationId || '');
+    loadObjetivo();
     if (!id) return showEmpty(`Los agentes trabajan en ${project.path}\n\nElige un agente y escribe. Puedes cambiar de agente cuando quieras: todos ven la misma conversación.`);
     try {
       const conv = await invoke('get_conversation', { id });
@@ -800,6 +832,7 @@
     }
     // IDE-25: conversación cargada; manda los avisos pendientes si el chat está libre.
     setTimeout(flushAvisos, 0);
+    loadObjetivo();
   }
 
   async function loadConversationList() {
@@ -891,6 +924,73 @@
     $('input').setSelectionRange(end, end);
     return true;
   }
+
+  // ---------- Objetivo de la sesión (IDE-29) ----------
+  let objetivo = null; // { conversation, goal, items, updatedAt } de la conversación abierta, o null
+  async function loadObjetivo() {
+    if (!conversationId) { objetivo = null; return renderObjetivo(); }
+    objetivo = await invoke('objective_get', { conversationId }).catch(() => null);
+    renderObjetivo();
+  }
+  async function saveObjetivo() {
+    if (!objetivo) return;
+    objetivo = await invoke('objective_save', { objective: objetivo }).catch((e) => { console.error(e); return objetivo; });
+    renderObjetivo();
+  }
+  function renderObjetivo() {
+    const items = (objetivo && objetivo.items) || [];
+    const hechos = items.filter((i) => i.done).length;
+    $('goalCount').textContent = items.length ? `${hechos}/${items.length}` : '';
+    $('goalEditor').hidden = !objetivo;
+    $('goalEmpty').hidden = !!objetivo && (!!objetivo.goal || items.length > 0);
+    $('goalEmpty').textContent = !conversationId
+      ? 'Escribe un mensaje en el chat para empezar la sesión; después podrás fijar su objetivo.'
+      : 'Sin objetivo. Si llegas con uno, escríbelo aquí o usa /objetivo en el chat; si no, no pasa nada.';
+    if (!objetivo) return;
+    if (document.activeElement !== $('goalText')) $('goalText').value = objetivo.goal || '';
+    $('goalUpdated').textContent = objetivo.updatedAt ? ' · ' + new Date(objetivo.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const ul = $('goalItems');
+    ul.innerHTML = '';
+    for (const it of items) {
+      const li = document.createElement('li');
+      if (it.done) li.className = 'done';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = it.done;
+      cb.addEventListener('change', () => { it.done = cb.checked; saveObjetivo(); });
+      const num = document.createElement('span'); num.className = 'muted'; num.textContent = it.id + '.';
+      const txt = document.createElement('span'); txt.className = 'goal-item-text'; txt.textContent = it.text;
+      li.append(cb, num, txt);
+      if (it.ticket) {
+        const esUrl = /^https?:\/\//i.test(it.ticket);
+        const chip = document.createElement(esUrl ? 'a' : 'span');
+        chip.className = 'goal-chip';
+        chip.textContent = esUrl ? new URL(it.ticket).pathname.split('/').filter(Boolean).pop() || it.ticket : it.ticket;
+        if (esUrl) chip.addEventListener('click', () => window.__TAURI__.opener.openUrl(it.ticket));
+        li.appendChild(chip);
+      }
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'icon'; del.title = 'Quitar';
+      del.innerHTML = '<i class="codicon codicon-close"></i>';
+      del.addEventListener('click', () => { objetivo.items = objetivo.items.filter((x) => x.id !== it.id); saveObjetivo(); });
+      li.appendChild(del);
+      ul.appendChild(li);
+    }
+  }
+  $('goalText').addEventListener('change', () => { if (objetivo) { objetivo.goal = $('goalText').value.trim(); saveObjetivo(); } });
+  $('goalAdd').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = $('goalNew').value.trim();
+    if (!text || !objetivo) return;
+    const id = objetivo.items.reduce((m, x) => Math.max(m, x.id), 0) + 1;
+    const ticket = $('goalTicket').value.trim();
+    objetivo.items.push({ id, text, done: false, ...(ticket ? { ticket } : {}) });
+    $('goalNew').value = ''; $('goalTicket').value = '';
+    saveObjetivo();
+    $('goalNew').focus();
+  });
+  // Un agente la cambió con `agentes tareas`: se recarga si es la conversación abierta.
+  listen('objective-changed', (e) => { if (e.payload.conversation === conversationId) loadObjetivo(); });
 
   // ---------- Menú de comandos «/» (IDE-27) ----------
   let comandos = Comandos.build(); // de serie; se completa con los agentes propios y las plantillas al abrirlo
@@ -1014,6 +1114,7 @@
       const boardTitle = boardOpen ? ($('boardSelect').selectedOptions[0]?.textContent || '').replace(/^[^\p{L}\p{N}]+/u, '').trim() : null;
       const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message: send, shown: send !== message ? message : null, workflow: flowOverride || $('workflow').value || null, account: $('account').value || 'auto', boardId, boardTitle });
       conversationId = reply.conversationId;
+      loadObjetivo();
       store.set(convKey(), conversationId);
       // Si la CLI no dio pasos de texto, se muestra la respuesta final
       if (!bubble.el.querySelector('.step-text')) bubble.steps.appendChild(textEl(reply.message.text || '(sin respuesta)'));
@@ -1580,10 +1681,13 @@
     $('agentsView').hidden = name !== 'agents';
     $('tabBoard').classList.toggle('active', name === 'board');
     $('boardView').hidden = name !== 'board';
+    $('tabGoal').classList.toggle('active', name === 'goal');
+    $('goalView').hidden = name !== 'goal';
     if (name === 'board') openBoard(); else closeBoard();
     usageVisible(name === 'usage');
     if (name === 'agents') requestAnimationFrame(fitPanes);
     if (!['council', 'agents', 'board'].includes(name) && document.body.classList.contains('council-wide')) toggleWide(false);
+    if (name === 'goal') loadObjetivo();
   }
   $('tabTree').addEventListener('click', () => setTab('tree'));
 
@@ -2204,6 +2308,7 @@
   $('widenCouncil').addEventListener('click', () => toggleWide());
   $('widenBoard').addEventListener('click', () => toggleWide());
   $('tabBoard').addEventListener('click', () => setTab('board'));
+  $('tabGoal').addEventListener('click', () => setTab('goal'));
   $('tabCouncil').addEventListener('click', () => { setTab('council'); loadCouncilList(); });
   $('newCouncil').addEventListener('click', () => openCouncilDialog(''));
   $('councilSelect').addEventListener('change', () => openCouncil($('councilSelect').value || null));
