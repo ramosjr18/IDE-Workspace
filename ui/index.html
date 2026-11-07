@@ -336,6 +336,19 @@
   .md th, .md td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; vertical-align: top; }
   .md th { background: color-mix(in srgb, var(--text) 6%, transparent); font-weight: 600; }
   .md tr:nth-child(even) td { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+  /* Markdown del usuario: colores legibles sobre su burbuja azul */
+  .user .md a { color: var(--me-text); text-decoration: underline; }
+  .user .md code { background: color-mix(in srgb, var(--me-text) 14%, transparent); }
+  .user .md pre code { background: none; }
+  .user .md .md-code { border-color: color-mix(in srgb, var(--me-text) 22%, transparent); background: color-mix(in srgb, var(--me-text) 9%, transparent); }
+  .user .md .md-code-head { border-bottom-color: color-mix(in srgb, var(--me-text) 22%, transparent); color: color-mix(in srgb, var(--me-text) 72%, transparent); }
+  .user .md .md-code-head button { color: inherit; }
+  .user .md .md-code-head button:hover { color: var(--me-text); }
+  .user .md blockquote { border-color: color-mix(in srgb, var(--me-text) 28%, transparent); color: color-mix(in srgb, var(--me-text) 78%, transparent); }
+  .user .md hr { border-color: color-mix(in srgb, var(--me-text) 28%, transparent); }
+  .user .md th, .user .md td { border-color: color-mix(in srgb, var(--me-text) 28%, transparent); }
+  .user .md th { background: color-mix(in srgb, var(--me-text) 12%, transparent); }
+  .user .md tr:nth-child(even) td { background: color-mix(in srgb, var(--me-text) 6%, transparent); }
   .step { border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--text) 3%, transparent); font-size: 13px; }
   .step-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; cursor: default; min-width: 0; }
   .step.expandable .step-head { cursor: pointer; }
@@ -732,10 +745,11 @@
     }
     const body = document.createElement('div');
     body.className = 'body';
-    if (role !== 'user' && !isError) {
+    if (isError) body.textContent = text;
+    else {
       body.classList.add('md');
-      renderMarkdown(body, text);
-    } else body.textContent = text;
+      renderMarkdown(body, text, role === 'user');
+    }
     div.appendChild(body);
     $('messages').appendChild(div);
     $('messages').scrollTop = $('messages').scrollHeight;
@@ -980,27 +994,30 @@
   // El texto viene de un agente, así que no es de fiar: el HTML que escriba se muestra como texto,
   // y lo que genera marked pasa además por DOMPurify antes de entrar en la página.
   const escapeHtml = (t) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const md = new marked.Marked({ gfm: true, breaks: false });
-  md.use({
-    renderer: {
-      html: ({ text }) => escapeHtml(text),
-      code({ text, lang }) {
-        const l = (lang || '').trim().split(/\s+/)[0];
-        const board = l.toLowerCase() === 'mermaid' ? '<button type="button" class="md-board">Ver en pizarra</button>' : '';
-        return `<div class="md-code"><div class="md-code-head"><span>${escapeHtml(l)}</span><span>${board}<button type="button" class="md-copy">Copiar</button></span></div><pre><code data-lang="${escapeHtml(l)}">${escapeHtml(text)}</code></pre></div>`;
-      },
-      table(token) {
-        return `<div class="md-table">${marked.Renderer.prototype.table.call(this, token)}</div>`;
-      },
+  // board=false (mensajes del usuario): mermaid solo es código, sin botón de pizarra ni envío automático.
+  const mdRenderer = (board = true) => ({
+    html: ({ text }) => escapeHtml(text),
+    code({ text, lang }) {
+      const l = (lang || '').trim().split(/\s+/)[0];
+      const b = board && l.toLowerCase() === 'mermaid' ? '<button type="button" class="md-board">Ver en pizarra</button>' : '';
+      return `<div class="md-code"><div class="md-code-head"><span>${escapeHtml(l)}</span><span>${b}<button type="button" class="md-copy">Copiar</button></span></div><pre><code data-lang="${escapeHtml(l)}">${escapeHtml(text)}</code></pre></div>`;
+    },
+    table(token) {
+      return `<div class="md-table">${marked.Renderer.prototype.table.call(this, token)}</div>`;
     },
   });
+  const md = new marked.Marked({ gfm: true, breaks: false });
+  md.use({ renderer: mdRenderer() });
+  // Variante del usuario: saltos simples respetados y sin pizarra; mismo escapado, copiar y resaltado.
+  const mdUser = new marked.Marked({ gfm: true, breaks: true });
+  mdUser.use({ renderer: mdRenderer(false) });
   const PURIFY = {
     FORBID_TAGS: ['style', 'form', 'textarea', 'select', 'img', 'svg', 'math', 'iframe', 'object', 'embed'],
     FORBID_ATTR: ['style', 'id', 'name'],
     ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\/|\.{0,2}\/|[\w.@-]+(?:\/|$|\.\w+))/i,
   };
-  function renderMarkdown(node, text) {
-    node.innerHTML = DOMPurify.sanitize(md.parse(text || ''), PURIFY);
+  function renderMarkdown(node, text, user = false) {
+    node.innerHTML = DOMPurify.sanitize((user ? mdUser : md).parse(text || ''), PURIFY);
     node.querySelectorAll('input').forEach((i) => { i.disabled = true; });
     highlightCode(node);
   }
