@@ -199,6 +199,7 @@ async fn chat(
     account: Option<String>,
     board_id: Option<String>,
     board_title: Option<String>,
+    shown: Option<String>,
 ) -> Result<ChatReply, String> {
     let ag = agents::get(&agent).ok_or_else(|| format!("Agente desconocido: {agent}"))?;
     if message.trim().is_empty() {
@@ -334,7 +335,7 @@ async fn chat(
         Some(conv_id.as_str()),
         &cwd.to_string_lossy(),
         vec![
-            store::Message { role: "user".into(), text: message, agent: None, agent_name: None, ts: String::new(), steps: None },
+            store::Message { role: "user".into(), text: shown.filter(|s| !s.trim().is_empty()).unwrap_or(message), agent: None, agent_name: None, ts: String::new(), steps: None },
             store::Message {
                 role: "assistant".into(),
                 text: result.text,

@@ -388,6 +388,7 @@
   .slash-item b { font-family: ui-monospace, monospace; white-space: nowrap; }
   .slash-item .args { opacity: .6; font-family: ui-monospace, monospace; white-space: nowrap; }
   .slash-item .desc { opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmd-chip { display: inline-block; padding: 0 6px; margin-right: 4px; border-radius: 4px; background: rgba(255,255,255,.22); font-family: ui-monospace, monospace; }
 </style>
 </head>
 <body>
@@ -744,6 +745,18 @@
     if (role !== 'user' && !isError) {
       body.classList.add('md');
       renderMarkdown(body, text);
+    } else if (role === 'user') {
+      // IDE-27: si empieza por un comando «/» de la lista, se resalta como chip y el resto va de texto plano.
+      const lista = (() => { try { return comandos; } catch { return Comandos.BUILTIN; } })();
+      const m = text.match(/^\/([a-z0-9][a-z0-9-]*)/i);
+      const name = m && lista.some((c) => c.name === m[1].toLowerCase()) ? m[1].toLowerCase() : null;
+      if (name) {
+        const chip = document.createElement('span');
+        chip.className = 'cmd-chip';
+        chip.textContent = '/' + name;
+        body.appendChild(chip);
+        body.appendChild(document.createTextNode(text.slice(m[0].length)));
+      } else body.textContent = text;
     } else body.textContent = text;
     div.appendChild(body);
     $('messages').appendChild(div);
@@ -943,19 +956,29 @@
     }
     const message = $('input').value.trim();
     if (!message) return;
-    // /maqueta «tema» pide al agente una maqueta HTML en docs/maquetas/
-    const maqueta = message.match(/^\/maqueta\b\s*([\s\S]*)$/i);
-    if (maqueta && maqueta[1].trim()) {
-      $('input').value = Maquetas.mockupPrompt(maqueta[1].trim());
-      // Se reenvía fuera de este evento: un requestSubmit dentro de submit se ignora.
-      return setTimeout(() => $('form').requestSubmit(), 0);
-    }
-    // /consejo «tema» abre el diálogo para convocar un consejo de agentes
-    const slash = message.match(/^\/consejo\b\s*([\s\S]*)$/i);
-    if (slash) {
-      $('input').value = '';
-      remember(message);
-      return openCouncilDialog(slash[1].trim());
+    // Comandos «/» (IDE-27): cada uno lanza su flujo; un «/texto» que no es comando se envía tal cual.
+    let send = message; // lo que recibe el agente
+    let flowOverride = null; // forma de trabajar solo para este mensaje
+    const parsed = Comandos.parse(message, comandos);
+    if (parsed) {
+      const { cmd, args } = parsed;
+      if (cmd.requiresArgs && !args) { $('input').value = '/' + cmd.name + ' '; return; }
+      if (cmd.kind === 'maqueta') {
+        $('input').value = Maquetas.mockupPrompt(args);
+        // Se reenvía fuera de este evento: un requestSubmit dentro de submit se ignora.
+        return setTimeout(() => $('form').requestSubmit(), 0);
+      }
+      if (cmd.kind === 'consejo' || cmd.kind === 'plantilla') {
+        $('input').value = '';
+        remember(message);
+        await openCouncilDialog(args);
+        if (cmd.kind === 'plantilla') { $('cTemplate').value = cmd.template.id; applyTemplate(cmd.template); }
+        return;
+      }
+      // Pizarra abierta ahora, para /pizarra.
+      const abierta = pizarra && !$('boardView').hidden && pizarra.kind !== 'council' ? pizarra : null;
+      send = cmd.prompt(args, { board: abierta ? (abierta.kind === 'diagram' ? abierta.id : 'proyecto') : null });
+      flowOverride = cmd.workflow;
     }
     const agent = agents.find((a) => a.id === $('agent').value);
     if (!agent) return;
@@ -974,7 +997,7 @@
       const boardOpen = pizarra && !$('boardView').hidden && pizarra.kind !== 'council' ? pizarra : null;
       const boardId = boardOpen ? (boardOpen.kind === 'diagram' ? boardOpen.id : 'proyecto') : null;
       const boardTitle = boardOpen ? ($('boardSelect').selectedOptions[0]?.textContent || '').replace(/^[^\p{L}\p{N}]+/u, '').trim() : null;
-      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message, workflow: $('workflow').value || null, account: $('account').value || 'auto', boardId, boardTitle });
+      const reply = await invoke('chat', { requestId: liveRequest.id, conversationId, agent: agent.id, message: send, shown: send !== message ? message : null, workflow: flowOverride || $('workflow').value || null, account: $('account').value || 'auto', boardId, boardTitle });
       conversationId = reply.conversationId;
       store.set(convKey(), conversationId);
       // Si la CLI no dio pasos de texto, se muestra la respuesta final
