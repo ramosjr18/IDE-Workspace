@@ -8,9 +8,9 @@ test('slug limpia el texto', () => {
   assert.equal(Comandos.slug('Revisión de API!'), 'revision-de-api');
 });
 
-// build: seis comandos de serie y agentes propios activos con su prompt.
+// build: siete comandos de serie y agentes propios activos con su prompt.
 test('build: de serie y agentes propios', () => {
-  assert.equal(Comandos.build().length, 6);
+  assert.equal(Comandos.build().length, 7);
   const activo = { id: 'revisor', name: 'Revisor', enabled: true, write: false, instructions: 'Revisa.' };
   const inactivo = { id: 'fantasma', name: 'Fantasma', enabled: false, instructions: 'No.' };
   const list = Comandos.build([activo, inactivo]);
@@ -21,6 +21,20 @@ test('build: de serie y agentes propios', () => {
   assert.ok(texto.includes('Revisa.'));
   assert.ok(texto.includes('solo lectura'));
   assert.ok(texto.includes('el login'));
+});
+
+// IDE-29: /objetivo pide guardar el objetivo y trocearlo con `agentes tareas`, sin empezar a trabajar.
+test('/objetivo prepara la checklist con agentes tareas', () => {
+  const { cmd, args } = Comandos.parse('/objetivo Terminar el refactor', Comandos.build());
+  assert.equal(cmd.name, 'objetivo');
+  assert.equal(cmd.kind, 'prompt');
+  assert.equal(cmd.requiresArgs, true);
+  const texto = cmd.prompt(args);
+  assert.ok(texto.includes('Terminar el refactor'));
+  assert.ok(texto.includes('agentes tareas --objetivo'));
+  assert.ok(texto.includes('agentes tareas --añadir'));
+  assert.ok(texto.includes('agentes tareas --hecha'));
+  assert.ok(texto.includes('No empieces'));
 });
 
 // build: un agente propio con nombre de serie no lo duplica.
@@ -42,7 +56,7 @@ test('build añade comandos de plantilla', () => {
 // filter: menú con «/» mientras no haya argumentos todavía.
 test('filter lista las opciones del menú', () => {
   const list = Comandos.build();
-  assert.equal(Comandos.filter(list, '/').length, 6);
+  assert.equal(Comandos.filter(list, '/').length, 7);
   assert.deepEqual(Comandos.filter(list, '/pi').map((c) => c.name), ['pizarra']);
   for (const c of Comandos.filter(list, '/a')) assert.ok(c.name.includes('a'));
   assert.deepEqual(Comandos.filter(list, '/equipo hola'), []);

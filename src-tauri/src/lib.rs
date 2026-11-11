@@ -14,6 +14,7 @@ mod agents;
 mod council;
 mod env;
 mod escena;
+mod objetivo;
 mod own_agents;
 mod panes;
 mod project;
@@ -622,6 +623,20 @@ fn diagram_get(current: State<'_, CurrentProject>, id: String) -> Result<Option<
     Ok(project::diagram_get(&panes::repo_root(&current.get()?), &id))
 }
 
+/// Objetivo y checklist de una conversación (vacío si aún no tiene).
+#[tauri::command]
+fn objective_get(conversation_id: String) -> Result<objetivo::Objetivo, String> {
+    objetivo::load(&conversation_id)
+}
+
+/// Un cambio de la pestaña Objetivo (goal | add | done | undone | remove), igual que `agentes tareas`.
+#[tauri::command]
+fn objective_op(app: AppHandle, conversation_id: String, op: String, text: Option<String>, ticket: Option<String>, id: Option<u32>) -> Result<objetivo::Objetivo, String> {
+    let o = objetivo::apply(&conversation_id, &op, text.as_deref().unwrap_or(""), ticket.as_deref(), id.unwrap_or(0))?;
+    let _ = app.emit("objective-changed", serde_json::json!({ "conversation": o.conversation }));
+    Ok(o)
+}
+
 /// La ventana entrega el PNG pedido por `agentes pizarra --imagen` (o el error si no pudo hacerlo).
 #[tauri::command]
 fn board_image_done(req: String, data: Option<Vec<u8>>, error: Option<String>) {
@@ -853,6 +868,8 @@ pub fn run() {
             project_board_save,
             diagrams_list,
             diagram_get,
+            objective_get,
+            objective_op,
             board_image_done,
             diagram_save,
             diagram_create,

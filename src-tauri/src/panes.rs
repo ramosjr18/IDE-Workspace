@@ -564,6 +564,18 @@ enum Request {
     },
     /// `agentes consejo --estado <id>`: el consejo tal como está (fase, tarjetas, síntesis).
     CouncilStatus { id: String },
+    /// `agentes tareas`: lee o cambia el objetivo y la checklist de la conversación del chat.
+    Tasks {
+        conversation: String,
+        /// list | goal | add | done | undone | remove
+        op: String,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        ticket: Option<String>,
+        #[serde(default)]
+        id: u32,
+    },
     /// `agentes pizarra --imagen`: PNG de un diagrama o de la pizarra libre.
     Image { cwd: String, which: String, path: String },
 }
@@ -589,6 +601,8 @@ struct Reply {
     board: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     council: Option<crate::council::Council>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    objective: Option<crate::objetivo::Objetivo>,
 }
 
 fn err(e: impl Into<String>) -> Reply {
@@ -682,6 +696,15 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
         Request::CouncilStatus { id } => match crate::council::get(&id) {
             Some(c) => Reply { ok: true, council: Some(c), ..Default::default() },
             None => err(format!("No hay ningún consejo {id}")),
+        },
+        Request::Tasks { conversation, op, text, ticket, id } => match crate::objetivo::apply(&conversation, &op, &text, ticket.as_deref(), id) {
+            Ok(o) => {
+                if op != "list" {
+                    let _ = app.emit("objective-changed", serde_json::json!({ "conversation": o.conversation }));
+                }
+                Reply { ok: true, objective: Some(o), ..Default::default() }
+            }
+            Err(e) => err(e),
         },
         Request::Image { cwd, which, path } => {
             let root = repo_root(Path::new(&cwd));
@@ -807,6 +830,9 @@ Uso:
                             convoca un consejo real (pestaña Consejo, solo lectura) para evaluar opciones o decidir
   agentes consejo --estado <id>
                             fase, tarjetas, síntesis y veredicto de un consejo
+  agentes tareas            objetivo y checklist de esta conversación (pestaña Objetivo)
+  agentes tareas --objetivo \"<texto>\" | --añadir \"<texto>\" [--ticket IDE-23] | --hecha <n> | --pendiente <n> | --quitar <n>
+                            cambia el objetivo o la checklist
 
 --worktree crea (o reutiliza) .claude/worktrees/<nombre> en una rama nueva desde HEAD
 (agentes/<nombre> si no se indica --branch) y ejecuta la CLI ahí.
@@ -914,6 +940,8 @@ struct Reply2 {
     board: Option<String>,
     #[serde(default)]
     council: Option<crate::council::Council>,
+    #[serde(default)]
+    objective: Option<crate::objetivo::Objetivo>,
 }
 
 #[derive(Deserialize)]
@@ -1169,6 +1197,39 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
                 let c = r.council.ok_or("Sin respuesta")?;
                 print_council(&c);
             }
+            Ok(0)
+        }
+        "tareas" => {
+            fn val(it: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
+                it.next().ok_or_else(|| format!("Falta el valor de {name}"))
+            }
+            let mut op = "list";
+            let mut text = String::new();
+            let mut ticket: Option<String> = None;
+            let mut id: u32 = 0;
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--objetivo" => { op = "goal"; text = val(&mut it, "--objetivo")?; }
+                    "--añadir" | "--anadir" => {
+                        op = "add";
+                        text = val(&mut it, "--añadir")?;
+                    }
+                    "--ticket" => ticket = Some(val(&mut it, "--ticket")?),
+                    "--hecha" => { op = "done"; id = val(&mut it, "--hecha")?.parse().map_err(|_| "El número del punto no es válido")?; }
+                    "--pendiente" => { op = "undone"; id = val(&mut it, "--pendiente")?.parse().map_err(|_| "El número del punto no es válido")?; }
+                    "--quitar" => { op = "remove"; id = val(&mut it, "--quitar")?.parse().map_err(|_| "El número del punto no es válido")?; }
+                    "-h" | "--help" => {
+                        println!("{HELP}");
+                        return Ok(0);
+                    }
+                    other => return Err(format!("Opción desconocida: {other}")),
+                }
+            }
+            let Some(conv) = std::env::var("AGENTES_CONVERSACION").ok().filter(|s| !s.is_empty()) else {
+                return Err("agentes tareas solo funciona desde una conversación del chat de la app".into());
+            };
+            let r = request(serde_json::json!({ "cmd": "tasks", "conversation": conv, "op": op, "text": text, "ticket": ticket, "id": id }))?;
+            println!("{}", r.objective.map(|o| o.describe()).unwrap_or_default());
             Ok(0)
         }
         "wait" | "kill" => {
