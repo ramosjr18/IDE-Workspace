@@ -699,16 +699,32 @@ fn term_start(
 struct CliAccounts {
     cli: String,
     supported: bool,
-    accounts: Vec<accounts::Account>,
+    accounts: Vec<AccountInfo>,
 }
 
-/// Cuentas de cada CLI (la principal siempre está).
+#[derive(Serialize)]
+struct AccountInfo {
+    #[serde(flatten)]
+    account: accounts::Account,
+    /// Solo las cuentas extra: "ready" | "login" | "missing" (el de la principal lo da `list_agents`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'static str>,
+}
+
+/// Cuentas de cada CLI (la principal siempre está), con el estado de sesión de las extra.
 #[tauri::command]
-fn accounts_list() -> Vec<CliAccounts> {
-    agents::AGENTS
-        .iter()
-        .map(|a| CliAccounts { cli: a.id.into(), supported: accounts::supports_accounts(a.id), accounts: accounts::list(a.id) })
-        .collect()
+async fn accounts_list() -> Vec<CliAccounts> {
+    let groups = agents::AGENTS.iter().map(|a| async move {
+        let checks = accounts::list(a.id).into_iter().map(|acc| async move {
+            let status = match acc.name {
+                Some(_) => Some(accounts::scope(acc.clone(), agents::status(a)).await),
+                None => None,
+            };
+            AccountInfo { account: acc, status }
+        });
+        CliAccounts { cli: a.id.into(), supported: accounts::supports_accounts(a.id), accounts: futures::future::join_all(checks).await }
+    });
+    futures::future::join_all(groups).await
 }
 
 #[tauri::command]

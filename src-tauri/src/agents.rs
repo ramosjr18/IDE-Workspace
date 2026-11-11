@@ -259,7 +259,9 @@ pub async fn status(agent: &Agent) -> &'static str {
             code == 0 && !out.contains("authentication")
         }
         StatusCheck::GeminiCreds => {
-            std::env::var("GEMINI_API_KEY").is_ok() || env::home().join(".gemini").join("oauth_creds.json").exists()
+            // Con una cuenta extra, GEMINI_CLI_HOME hace de carpeta de usuario.
+            let home = crate::accounts::active().and_then(|a| a.dir.filter(|_| a.cli == "gemini")).unwrap_or_else(env::home);
+            std::env::var("GEMINI_API_KEY").is_ok() || home.join(".gemini").join("oauth_creds.json").exists()
         }
         StatusCheck::CopilotAuth => {
             let saved = std::fs::read_to_string(env::home().join(".copilot").join("config.json"))

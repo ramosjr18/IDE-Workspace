@@ -76,6 +76,37 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 40 && name != "principal" && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
 }
 
+/// Nombre de carpeta para lo que escribe el usuario: «Claude Trabajo» → «Claude-Trabajo»
+/// (espacios a «-», sin tildes). Lo demás que no valga se queda y lo rechaza `valid_name`.
+fn normalize_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars() {
+        let c = match c {
+            'á' | 'à' | 'ä' | 'â' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'Á' | 'À' | 'Ä' | 'Â' => 'A',
+            'É' | 'È' | 'Ë' | 'Ê' => 'E',
+            'Í' | 'Ì' | 'Ï' | 'Î' => 'I',
+            'Ó' | 'Ò' | 'Ö' | 'Ô' => 'O',
+            'Ú' | 'Ù' | 'Ü' | 'Û' => 'U',
+            'ñ' => 'n',
+            'Ñ' => 'N',
+            'ç' => 'c',
+            'Ç' => 'C',
+            c if c.is_whitespace() => '-',
+            c => c,
+        };
+        if c == '-' && out.ends_with('-') {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Cuentas de una CLI: la principal primero y luego las extra por nombre.
 pub fn list(cli: &str) -> Vec<Account> {
     list_in(&root(), cli)
@@ -115,8 +146,9 @@ fn add_in(root: &Path, cli: &str, name: &str) -> Result<Account, String> {
     if !supports_accounts(cli) {
         return Err(format!("«{cli}» todavía no admite varias cuentas"));
     }
+    let name = &normalize_name(name);
     if !valid_name(name) {
-        return Err("Nombre no válido: letras, números, «-» y «_» (máx. 40)".into());
+        return Err(format!("Nombre no válido «{name}»: letras, números, espacios, «-» y «_» (máx. 40)"));
     }
     let dir = root.join(cli).join(name);
     if dir.exists() {
@@ -253,6 +285,10 @@ mod tests {
             assert!(add_in(r, "codex", "../x").is_err());
             assert!(add_in(r, "codex", "principal").is_err());
             assert!(add_in(r, "agy", "dos").is_err());
+            // Lo que se escribe a mano: espacios y tildes se convierten.
+            assert_eq!(add_in(r, "claude", " Claude  Trabajo ").unwrap().id, "claude:Claude-Trabajo");
+            assert_eq!(add_in(r, "claude", "Ñoño Pérez").unwrap().id, "claude:Nono-Perez");
+            assert!(add_in(r, "claude", "a/b").is_err());
             let env = a.env();
             assert_eq!(env[0].0, "CODEX_HOME");
             assert!(env[0].1.ends_with("codex/cuenta-2"));

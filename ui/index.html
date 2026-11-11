@@ -1485,7 +1485,10 @@
       const group = cliAccounts.find((c) => c.cli === a.id);
       if (!group || a.status === 'missing') continue;
       for (const acc of group.accounts.filter((x) => x.name)) {
-        const login = el('button', { type: 'button', textContent: 'Iniciar sesión' });
+        const st = STATUS[acc.status] || STATUS.login;
+        const pill = el('span', { className: `pill ${acc.status || 'login'}`, textContent: st.text });
+        const login = el('button', { type: 'button', textContent: acc.status === 'ready' ? 'Cambiar sesión' : 'Iniciar sesión' });
+        if (acc.status !== 'ready') login.className = 'primary';
         login.onclick = () => openAgentTerminal(a, 'login', acc);
         const del = el('button', { type: 'button', textContent: 'Quitar' });
         del.onclick = async () => {
@@ -1493,10 +1496,10 @@
           try { await invoke('account_remove', { id: acc.id }); } catch (err) { alertMsg(err); }
           loadAgents();
         };
-        $('agentList').appendChild(el('div', { className: 'acc-row' }, el('span', { className: 'n', textContent: `Cuenta «${acc.name}»` }), login, del));
+        $('agentList').appendChild(el('div', { className: 'acc-row' }, el('span', { className: 'n', textContent: `Cuenta «${acc.name}»` }), pill, login, del));
       }
       if (group.supported) {
-        const input = el('input', { placeholder: `Otra cuenta de ${a.name} (p. ej. team-2)`, spellcheck: false });
+        const input = el('input', { placeholder: `Otra cuenta de ${a.name} (p. ej. Equipo 2)`, spellcheck: false });
         const add = el('button', { type: 'button', textContent: '+ Cuenta' });
         add.onclick = async () => {
           const name = input.value.trim();
