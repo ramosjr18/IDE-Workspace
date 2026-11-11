@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const IS_WIN: bool = cfg!(windows);
@@ -111,6 +111,14 @@ pub async fn conversation_scope<F: std::future::Future>(id: String, f: F) -> F::
     CONVERSATION.scope(id, f).await
 }
 
+/// Proyecto abierto en la app: sus procesos hijos lo reciben en AGENTES_PROYECTO.
+static PROJECT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// La app cambia de proyecto (o abre el primero).
+pub fn set_project(dir: Option<PathBuf>) {
+    *PROJECT.lock().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
 /// Variables de entorno para los procesos hijos.
 pub fn child_env() -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().filter(|(k, _)| !k.eq_ignore_ascii_case("PATH")).collect();
@@ -125,6 +133,10 @@ pub fn child_env() -> HashMap<String, String> {
     // Cuenta activa de la tarea (varias cuentas por CLI): CLAUDE_CONFIG_DIR, CODEX_HOME…
     for (k, v) in crate::accounts::active_env() {
         env.insert(k, v);
+    }
+    // Proyecto de la app: `agentes pizarra` / `consejo` lo usan si el agente hace `cd` fuera de él.
+    if let Some(p) = PROJECT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        env.insert("AGENTES_PROYECTO".into(), p.to_string_lossy().to_string());
     }
     // Conversación del chat que lanza el proceso: `agentes run` / `agentes consejo` la mandan a la app para avisarla al terminar.
     if let Ok(id) = CONVERSATION.try_with(|c| c.clone()) {

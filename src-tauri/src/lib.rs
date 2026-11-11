@@ -127,6 +127,7 @@ fn open_project(
     }
     let dir = dir.canonicalize().unwrap_or(dir);
     *current.0.lock().unwrap() = Some(dir.clone());
+    env::set_project(Some(dir.clone()));
     project::remember(&dir);
     let _ = watcher.watch(app, dir.clone());
     let p = project::Project::from_path(&dir);
@@ -810,6 +811,7 @@ pub fn run() {
     if let Some(dir) = &initial {
         project::remember(dir);
     }
+    env::set_project(initial.clone());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
