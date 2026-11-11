@@ -185,7 +185,27 @@ fn command(file: &Path) -> Command {
     cmd.env_clear().envs(child_env()).kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
+    // Grupo de procesos propio, para poder matar también a sus hijos (ver `kill_tree`).
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd
+}
+
+/// Mata el proceso y todo lo que haya lanzado. Las CLIs de npm (Copilot) son un lanzador de node
+/// que arranca el binario de verdad: matar solo el lanzador deja vivo al binario, que sigue
+/// trabajando y bloquea la sesión («SessionInUseError» en el siguiente mensaje).
+async fn kill_tree(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        #[cfg(unix)]
+        let _ = Command::new("kill").args(["-s", "KILL", "--", &format!("-{pid}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().await;
+        #[cfg(windows)]
+        {
+            let mut tk = Command::new("taskkill");
+            tk.args(["/T", "/F", "/PID", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(0x0800_0000);
+            let _ = tk.status().await;
+        }
+    }
+    let _ = child.kill().await;
 }
 
 /// Ejecuta un comando corto. Devuelve (código, salida). `stop_on` corta en cuanto aparece ese texto.
@@ -206,11 +226,11 @@ async fn exec(cmd_name: &str, args: &[&str], timeout: Duration, stop_on: &[&str]
         tokio::select! {
             r = stdout.read(&mut buf_o), if !o_done => match r { Ok(0) | Err(_) => o_done = true, Ok(n) => out.extend_from_slice(&buf_o[..n]) },
             r = stderr.read(&mut buf_e), if !e_done => match r { Ok(0) | Err(_) => e_done = true, Ok(n) => out.extend_from_slice(&buf_e[..n]) },
-            _ = &mut deadline => { let _ = child.kill().await; return (-1, String::from_utf8_lossy(&out).into()); }
+            _ = &mut deadline => { kill_tree(&mut child).await; return (-1, String::from_utf8_lossy(&out).into()); }
         }
         let text = String::from_utf8_lossy(&out);
         if stop_on.iter().any(|s| text.contains(s)) {
-            let _ = child.kill().await;
+            kill_tree(&mut child).await;
             return (1, text.into());
         }
     }
@@ -460,13 +480,13 @@ async fn run_with(
             },
             r = &mut cancel, if cancel_live => {
                 if r.is_ok() {
-                    let _ = child.kill().await;
+                    kill_tree(&mut child).await;
                     return Err("Detenido.".into());
                 }
                 cancel_live = false;
             }
             _ = &mut deadline => {
-                let _ = child.kill().await;
+                kill_tree(&mut child).await;
                 return Err("Tiempo agotado (10 min)".into());
             }
         }
@@ -516,6 +536,25 @@ pub fn terminal_command(agent: &Agent, action: &str) -> (String, String, Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Como el lanzador de node de Copilot: al detener, el proceso nieto también tiene que morir.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_tree_mata_tambien_a_los_nietos() {
+        let mut cmd = command(Path::new("/bin/sh"));
+        cmd.args(["-c", "sleep 300 & echo $!; wait"]).stdout(Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let nieto = lines.next_line().await.unwrap().unwrap();
+        let vivo = || std::fs::read_to_string(format!("/proc/{nieto}/stat")).map(|s| !s.contains(") Z ")).unwrap_or(false);
+        assert!(vivo());
+        kill_tree(&mut child).await;
+        for _ in 0..50 {
+            if !vivo() { return; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("el nieto {nieto} sigue vivo");
+    }
 
     fn msg(role: &str, text: &str, name: Option<&str>) -> Message {
         Message { role: role.into(), text: text.into(), agent: None, agent_name: name.map(str::to_string), ts: String::new(), steps: None }

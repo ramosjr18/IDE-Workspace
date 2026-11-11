@@ -10,8 +10,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter};
 
 /// Carpetas que nunca se muestran ni se vigilan.
@@ -252,10 +253,104 @@ struct Changed {
 
 /// Vigila la carpeta del proyecto. Se sustituye al cambiar de proyecto.
 #[derive(Default)]
-pub struct Watcher(Mutex<Option<Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>>>);
+pub struct Watcher {
+    debouncer: Mutex<Option<Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>>>,
+    /// Parada del sondeo del proyecto anterior (ver `needs_polling`).
+    poll_stop: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+/// En WSL, las carpetas de Windows (`/mnt/c/...`) no dan avisos de inotify, ni siquiera de los
+/// cambios hechos desde el propio WSL: hay que mirar cada poco.
+fn needs_polling(root: &Path) -> bool {
+    cfg!(target_os = "linux")
+        && root.starts_with("/mnt/")
+        && fs::read_to_string("/proc/sys/kernel/osrelease").is_ok_and(|r| r.to_lowercase().contains("microsoft"))
+}
+
+/// Huella barata del proyecto para el sondeo: en git, los archivos con cambios (estado, fecha y
+/// tamaño) y la rama; sin git, todos los archivos. Ruta → firma.
+fn snapshot(root: &Path) -> HashMap<String, String> {
+    let stamp = |rel: &str| {
+        fs::metadata(root.join(rel))
+            .map(|m| format!("{}:{:?}", m.len(), m.modified().unwrap_or(SystemTime::UNIX_EPOCH)))
+            .unwrap_or_default()
+    };
+    let mut snap = HashMap::new();
+    // --no-optional-locks: sin reescribir .git/index, que no se toque nada solo por mirar.
+    match git(root, &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"]) {
+        Some(text) => {
+            let mut parts = text.split(' ');
+            while let Some(entry) = parts.next() {
+                if entry.len() < 4 {
+                    continue;
+                }
+                let (code, path) = entry.split_at(3);
+                if code.contains('R') || code.contains('C') {
+                    parts.next();
+                }
+                if !skipped(Path::new(path)) {
+                    snap.insert(path.to_string(), format!("{code}{}", stamp(path)));
+                }
+            }
+            snap.insert(".git/HEAD".into(), fs::read_to_string(root.join(".git/HEAD")).unwrap_or_default());
+            snap.insert(".git/head-commit".into(), git(root, &["rev-parse", "HEAD"]).unwrap_or_default());
+        }
+        None => {
+            let mut files = Vec::new();
+            walk(root, root, &mut files);
+            for f in files {
+                let st = stamp(&f);
+                snap.insert(f, st);
+            }
+        }
+    }
+    snap
+}
+
+/// Rutas que cambian entre dos huellas (las de `.git` aparte, como en inotify). Un archivo que
+/// solo sale de `git status` (p. ej. al hacer commit) no ha cambiado en disco: refresca el árbol,
+/// pero no se cuenta como archivo cambiado.
+fn snapshot_diff(old: &HashMap<String, String>, new: &HashMap<String, String>) -> (Vec<String>, bool) {
+    let mut files = Vec::new();
+    let mut git_changed = false;
+    for k in old.keys().chain(new.keys()) {
+        if old.get(k) != new.get(k) {
+            if k.starts_with(".git/") {
+                git_changed = true;
+            } else if !files.contains(k) && new.contains_key(k) {
+                files.push(k.clone());
+            }
+        }
+    }
+    (files, git_changed)
+}
 
 impl Watcher {
     pub fn watch(&self, app: AppHandle, root: PathBuf) -> Result<(), String> {
+        if let Some(old) = self.poll_stop.lock().unwrap().take() {
+            old.store(true, Ordering::Relaxed);
+        }
+        if needs_polling(&root) {
+            let stop = Arc::new(AtomicBool::new(false));
+            *self.poll_stop.lock().unwrap() = Some(stop.clone());
+            let (app, root) = (app.clone(), root.clone());
+            std::thread::spawn(move || {
+                let mut last = snapshot(&root);
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_secs(2));
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let now = snapshot(&root);
+                    let (files, git_changed) = snapshot_diff(&last, &now);
+                    if files.is_empty() && !git_changed && last.len() == now.len() {
+                        continue;
+                    }
+                    let _ = app.emit("fs-changed", Changed { files });
+                    last = now;
+                }
+            });
+        }
         let base = root.clone();
         let mut debouncer = new_debouncer(Duration::from_millis(300), move |res: DebounceEventResult| {
             let Ok(events) = res else { return };
@@ -278,7 +373,7 @@ impl Watcher {
         })
         .map_err(|e| e.to_string())?;
         debouncer.watcher().watch(&root, RecursiveMode::Recursive).map_err(|e| e.to_string())?;
-        *self.0.lock().unwrap() = Some(debouncer);
+        *self.debouncer.lock().unwrap() = Some(debouncer);
         Ok(())
     }
 }
@@ -326,5 +421,47 @@ pub fn reload_on_ui_change(app: AppHandle) {
             // Vive mientras viva la app.
             std::mem::forget(d);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snap(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn diff_de_huellas() {
+        let antes = snap(&[("a.txt", " M1"), ("b.txt", "??1"), (".git/HEAD", "main")]);
+        // Sin cambios: nada.
+        assert_eq!(snapshot_diff(&antes, &antes), (vec![], false));
+        // Editado otra vez, nuevo y commit de b (sale de status): solo cuentan los que siguen en disco.
+        let despues = snap(&[("a.txt", " M2"), ("c.txt", "??1"), (".git/HEAD", "main")]);
+        let (mut files, git) = snapshot_diff(&antes, &despues);
+        files.sort();
+        assert_eq!(files, vec!["a.txt", "c.txt"]);
+        assert!(!git);
+        // Cambio de rama.
+        let rama = snap(&[("a.txt", " M1"), ("b.txt", "??1"), (".git/HEAD", "otra")]);
+        assert_eq!(snapshot_diff(&antes, &rama), (vec![], true));
+    }
+
+    #[test]
+    fn huella_de_un_repo_ve_las_ediciones() {
+        let dir = std::env::temp_dir().join(format!("huella-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        if git(&dir, &["init", "-q"]).is_none() {
+            return; // sin git en esta máquina
+        }
+        fs::write(dir.join("a.txt"), "uno").unwrap();
+        let s1 = snapshot(&dir);
+        assert!(s1.contains_key("a.txt"));
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(dir.join("a.txt"), "uno y dos").unwrap();
+        let s2 = snapshot(&dir);
+        assert_eq!(snapshot_diff(&s1, &s2).0, vec!["a.txt"]);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
