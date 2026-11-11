@@ -415,6 +415,9 @@
   .slash-item .desc { opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cmd-chip { display: inline-block; padding: 0 6px; margin-right: 4px; border-radius: 4px; background: rgba(255,255,255,.22); font-family: ui-monospace, monospace; }
   .goal-body { padding: 12px 16px; overflow-y: auto; }
+  .goal-body[hidden], #goalToolbar[hidden] { display: none; }
+  .plane-host { flex: 1; min-height: 0; overflow: hidden; }
+  .plane-host[hidden] { display: none; }
   .goal-text { width: 100%; font-size: 15px; font-weight: 600; padding: 8px 10px; margin-bottom: 10px; }
   .goal-items { list-style: none; margin: 0 0 10px; padding: 0; }
   .goal-items li { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
@@ -513,7 +516,9 @@
       <button type="button" role="tab" id="tabAgents" class="tab needs-project">Agentes <span id="agentsCount" class="count"></span></button>
     </div>
     <div id="goalView" class="view goal-view" hidden>
-      <div class="toolbar"><span class="section-title">Objetivo de la sesión</span><span id="goalUpdated" class="muted"></span></div>
+      <div id="goalToolbar" class="toolbar"><span class="section-title">Objetivo de la sesión</span><span id="goalUpdated" class="muted"></span></div>
+      <!-- Plane (docs/plan-plane-objetivo.md): si está configurado, su interfaz sustituye a la de abajo. -->
+      <div id="planeHost" class="plane-host" hidden></div>
       <div class="goal-body">
         <p id="goalEmpty" class="muted"></p>
         <div id="goalEditor" hidden>
@@ -1021,6 +1026,43 @@
   });
   // Un agente la cambió con `agentes tareas`: se recarga si es la conversación abierta.
   listen('objective-changed', (e) => { if (e.payload.conversation === conversationId) loadObjetivo(); });
+
+  // ---------- Pestaña Objetivo con Plane (docs/plan-plane-objetivo.md) ----------
+  // La interfaz de Plane (objetivos/vista → ui/vendor/objetivos) se carga la primera vez que se abre
+  // la pestaña. Habla con Plane por `plane_request`: la clave de la API se queda en Rust.
+  let planeCargando = null;
+  let planeMontado = false;
+  function loadPlaneBundle() {
+    if (planeCargando) return planeCargando;
+    planeCargando = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'vendor/objetivos/objetivos.js';
+      s.addEventListener('load', resolve);
+      s.addEventListener('error', () => { planeCargando = null; reject(new Error('No se pudo cargar la vista de Plane')); });
+      document.head.appendChild(s);
+    });
+    return planeCargando;
+  }
+  async function openPlane() {
+    const info = await invoke('plane_info').catch(() => ({ configured: false }));
+    $('planeHost').hidden = !info.configured;
+    $('goalToolbar').hidden = info.configured;
+    document.querySelector('#goalView .goal-body').hidden = info.configured;
+    if (!info.configured || planeMontado) return;
+    try {
+      await loadPlaneBundle();
+    } catch (err) {
+      return showNotice(String(err));
+    }
+    const oscuro = matchMedia('(prefers-color-scheme: dark)');
+    window.ObjetivosVista.mount($('planeHost'), {
+      workspace: info.workspace,
+      theme: oscuro.matches ? 'dark' : 'light',
+      request: (method, path, body) => invoke('plane_request', { method, path, body: body ?? null }),
+    });
+    oscuro.addEventListener('change', () => window.ObjetivosVista.setTheme(oscuro.matches ? 'dark' : 'light'));
+    planeMontado = true;
+  }
 
   // ---------- Menú de comandos «/» (IDE-27) ----------
   let comandos = Comandos.build(); // de serie; se completa con los agentes propios y las plantillas al abrirlo
@@ -1726,7 +1768,7 @@
     usageVisible(name === 'usage');
     if (name === 'agents') requestAnimationFrame(fitPanes);
     if (!['council', 'agents', 'board'].includes(name) && document.body.classList.contains('council-wide')) toggleWide(false);
-    if (name === 'goal') loadObjetivo();
+    if (name === 'goal') { loadObjetivo(); openPlane(); }
   }
   $('tabTree').addEventListener('click', () => setTab('tree'));
 

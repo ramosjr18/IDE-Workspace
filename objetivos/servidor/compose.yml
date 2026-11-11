@@ -1,0 +1,92 @@
+# Servidor de Plane para la pestaña Objetivo (docs/plan-plane-objetivo.md).
+# Solo el servidor: la interfaz la pone la app. La API se construye desde nuestra copia
+# (../plane), sin telemetría. Los puertos solo escuchan en 127.0.0.1.
+#
+#   docker compose -p objetivos up -d --build    arrancar
+#   docker compose -p objetivos down             parar (los datos se quedan en los volúmenes)
+#
+# Las claves están en .env (fuera de git); se crea copiando .env.example.
+
+x-api: &api
+  build:
+    context: ../plane/apps/api
+    dockerfile: Dockerfile.api
+  image: objetivos-plane-api:local
+  env_file: .env
+  restart: unless-stopped
+  depends_on:
+    - db
+    - redis
+    - mq
+
+services:
+  db:
+    image: postgres:15.7-alpine
+    restart: unless-stopped
+    command: postgres -c max_connections=200
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: valkey/valkey:7.2.11-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+
+  mq:
+    image: rabbitmq:3.13.6-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST}
+    volumes:
+      - mqdata:/var/lib/rabbitmq
+
+  minio:
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
+    restart: unless-stopped
+    command: server /export
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY}
+    ports:
+      - "127.0.0.1:9100:9000"
+    volumes:
+      - uploads:/export
+
+  migrator:
+    <<: *api
+    restart: "no"
+    command: ./bin/docker-entrypoint-migrator.sh
+
+  api:
+    <<: *api
+    command: ./bin/docker-entrypoint-api.sh
+    ports:
+      - "127.0.0.1:8100:8000"
+    depends_on:
+      - migrator
+
+  worker:
+    <<: *api
+    command: ./bin/docker-entrypoint-worker.sh
+    depends_on:
+      - api
+
+  beat:
+    <<: *api
+    command: ./bin/docker-entrypoint-beat.sh
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:
+  mqdata:
+  uploads:

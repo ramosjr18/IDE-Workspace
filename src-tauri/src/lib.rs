@@ -17,6 +17,7 @@ mod escena;
 mod objetivo;
 mod own_agents;
 mod panes;
+mod plane;
 mod project;
 mod roles;
 mod store;
@@ -654,6 +655,18 @@ fn objective_get(conversation_id: String) -> Result<objetivo::Objetivo, String> 
     objetivo::load(&conversation_id)
 }
 
+/// Pestaña Objetivo con Plane: si está configurado (sin la clave).
+#[tauri::command]
+fn plane_info() -> plane::Info {
+    plane::info()
+}
+
+/// Petición de la pestaña Objetivo a la API de Plane; la clave la pone Rust.
+#[tauri::command]
+async fn plane_request(method: String, path: String, body: Option<serde_json::Value>) -> Result<plane::Response, String> {
+    plane::request(&method, &path, body).await
+}
+
 /// Un cambio de la pestaña Objetivo (goal | add | done | undone | remove), igual que `agentes tareas`.
 #[tauri::command]
 fn objective_op(app: AppHandle, conversation_id: String, op: String, text: Option<String>, ticket: Option<String>, id: Option<u32>) -> Result<objetivo::Objetivo, String> {
@@ -923,6 +936,8 @@ pub fn run() {
             diagram_get,
             objective_get,
             objective_op,
+            plane_info,
+            plane_request,
             board_image_done,
             diagram_save,
             diagram_create,
