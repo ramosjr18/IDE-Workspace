@@ -629,16 +629,10 @@ fn objective_get(conversation_id: String) -> Result<objetivo::Objetivo, String> 
     objetivo::load(&conversation_id)
 }
 
-/// Guarda el objetivo que edita el usuario en la pestaña Objetivo.
+/// Un cambio de la pestaña Objetivo (goal | add | done | undone | remove), igual que `agentes tareas`.
 #[tauri::command]
-fn objective_save(app: AppHandle, objective: objetivo::Objetivo) -> Result<objetivo::Objetivo, String> {
-    let mut o = objective;
-    o.goal = o.goal.trim().to_string();
-    o.items.retain(|i| !i.text.trim().is_empty());
-    if o.items.len() > 200 {
-        return Err("Demasiados puntos".into());
-    }
-    objetivo::store(&mut o)?;
+fn objective_op(app: AppHandle, conversation_id: String, op: String, text: Option<String>, ticket: Option<String>, id: Option<u32>) -> Result<objetivo::Objetivo, String> {
+    let o = objetivo::apply(&conversation_id, &op, text.as_deref().unwrap_or(""), ticket.as_deref(), id.unwrap_or(0))?;
     let _ = app.emit("objective-changed", serde_json::json!({ "conversation": o.conversation }));
     Ok(o)
 }
@@ -875,7 +869,7 @@ pub fn run() {
             diagrams_list,
             diagram_get,
             objective_get,
-            objective_save,
+            objective_op,
             board_image_done,
             diagram_save,
             diagram_create,

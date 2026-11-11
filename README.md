@@ -74,10 +74,20 @@ Al escribir `/` al principio del mensaje se abre la lista de comandos, que se fi
 | `/consejo <tema>` | Convoca un consejo de agentes (abre el diálogo) |
 | `/diagrama <qué dibujar>` | Dibuja un diagrama en Mermaid y lo abre en la pizarra |
 | `/pizarra [pregunta]` | El agente lee la pizarra abierta y la tiene en cuenta |
+| `/objetivo <objetivo>` | Fija el objetivo de la sesión y el agente lo divide en una checklist (pestaña **Objetivo**) |
 | `/maqueta <tema>` | Maqueta HTML en `docs/maquetas/` |
 | `/directo <mensaje>` | Solo este mensaje, sin forma de trabajar |
 
 También salen tus agentes propios activos (`/<id> <mensaje>`) y tus plantillas de consejo (`/consejo-<plantilla>`). Un `/texto` que no sea un comando se envía como mensaje normal.
+
+### Objetivo de la sesión
+
+Cada conversación puede tener un objetivo y una checklist, en la pestaña **Objetivo** del panel derecho. Es opcional: sin objetivo, la pestaña dice «Sin objetivo» y no molesta.
+
+- Escribe el objetivo en una línea, añade puntos, márcalos o quítalos. Cada punto puede llevar un ticket (`IDE-23` o una URL, que se abre en el navegador).
+- `/objetivo <texto>` en el chat: el agente guarda el objetivo, lo divide en pasos y te enseña la checklist sin empezar todavía.
+- Los agentes la leen y la mantienen al día con `agentes tareas` (`--objetivo "…"`, `--añadir "…" [--ticket X]`, `--hecha <n>`, `--pendiente <n>`, `--quitar <n>`): añaden lo que descubren y marcan lo que terminan. La pestaña se refresca sola.
+- Cada cambio, tuyo o de un agente, se aplica sobre lo guardado, así que no se pisan aunque trabajen a la vez. Se guarda en `~/.ide-workspace-chat/objetivos/<conversación>.json` y se conserva al reabrir la conversación.
 
 ## Uso de los agentes
 

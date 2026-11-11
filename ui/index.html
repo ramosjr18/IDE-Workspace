@@ -832,7 +832,6 @@
     }
     // IDE-25: conversación cargada; manda los avisos pendientes si el chat está libre.
     setTimeout(flushAvisos, 0);
-    loadObjetivo();
   }
 
   async function loadConversationList() {
@@ -932,9 +931,15 @@
     objetivo = await invoke('objective_get', { conversationId }).catch(() => null);
     renderObjetivo();
   }
-  async function saveObjetivo() {
-    if (!objetivo) return;
-    objetivo = await invoke('objective_save', { objective: objetivo }).catch((e) => { console.error(e); return objetivo; });
+  // Cada cambio va como una operación sobre lo guardado (no el objeto entero): así no se pisa lo que haga un agente a la vez.
+  async function objetivoOp(op, args = {}) {
+    if (!conversationId) return;
+    try {
+      objetivo = await invoke('objective_op', { conversationId, op, ...args });
+    } catch (err) {
+      showNotice(String(err));
+      return loadObjetivo();
+    }
     renderObjetivo();
   }
   function renderObjetivo() {
@@ -957,36 +962,36 @@
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = it.done;
-      cb.addEventListener('change', () => { it.done = cb.checked; saveObjetivo(); });
+      cb.addEventListener('change', () => objetivoOp(cb.checked ? 'done' : 'undone', { id: it.id }));
       const num = document.createElement('span'); num.className = 'muted'; num.textContent = it.id + '.';
       const txt = document.createElement('span'); txt.className = 'goal-item-text'; txt.textContent = it.text;
       li.append(cb, num, txt);
       if (it.ticket) {
-        const esUrl = /^https?:\/\//i.test(it.ticket);
-        const chip = document.createElement(esUrl ? 'a' : 'span');
+        let url = null;
+        try { if (/^https?:\/\//i.test(it.ticket)) url = new URL(it.ticket); } catch { /* URL mal escrita: se ve como texto */ }
+        const chip = document.createElement(url ? 'a' : 'span');
         chip.className = 'goal-chip';
-        chip.textContent = esUrl ? new URL(it.ticket).pathname.split('/').filter(Boolean).pop() || it.ticket : it.ticket;
-        if (esUrl) chip.addEventListener('click', () => window.__TAURI__.opener.openUrl(it.ticket));
+        chip.textContent = url ? url.pathname.split('/').filter(Boolean).pop() || it.ticket : it.ticket;
+        chip.title = it.ticket;
+        if (url) chip.addEventListener('click', () => openUrl(it.ticket));
         li.appendChild(chip);
       }
       const del = document.createElement('button');
       del.type = 'button'; del.className = 'icon'; del.title = 'Quitar';
       del.innerHTML = '<i class="codicon codicon-close"></i>';
-      del.addEventListener('click', () => { objetivo.items = objetivo.items.filter((x) => x.id !== it.id); saveObjetivo(); });
+      del.addEventListener('click', () => objetivoOp('remove', { id: it.id }));
       li.appendChild(del);
       ul.appendChild(li);
     }
   }
-  $('goalText').addEventListener('change', () => { if (objetivo) { objetivo.goal = $('goalText').value.trim(); saveObjetivo(); } });
+  $('goalText').addEventListener('change', () => objetivoOp('goal', { text: $('goalText').value }));
   $('goalAdd').addEventListener('submit', (e) => {
     e.preventDefault();
     const text = $('goalNew').value.trim();
     if (!text || !objetivo) return;
-    const id = objetivo.items.reduce((m, x) => Math.max(m, x.id), 0) + 1;
-    const ticket = $('goalTicket').value.trim();
-    objetivo.items.push({ id, text, done: false, ...(ticket ? { ticket } : {}) });
+    const ticket = $('goalTicket').value.trim() || null;
     $('goalNew').value = ''; $('goalTicket').value = '';
-    saveObjetivo();
+    objetivoOp('add', { text, ticket });
     $('goalNew').focus();
   });
   // Un agente la cambió con `agentes tareas`: se recarga si es la conversación abierta.

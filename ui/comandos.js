@@ -10,6 +10,8 @@
       prompt: (a) => 'Dibuja en Mermaid un diagrama de: ' + a + '\nEnvíalo a la pizarra con `agentes pizarra --title "<título corto>"` y resume en dos líneas qué muestra.' },
     { name: 'pizarra', args: '[pregunta]', description: 'El agente lee la pizarra abierta y la tiene en cuenta', kind: 'prompt', workflow: null, requiresArgs: false,
       prompt: (a, ctx) => 'Lee la pizarra con `agentes pizarra --leer ' + ((ctx && ctx.board) || 'proyecto') + '` (si falla, usa `agentes pizarra --listar` y elige la que corresponda) y tenla en cuenta.' + (a ? '\n\n' + a : ' Resume qué hay dibujado.') },
+    { name: 'objetivo', args: '<objetivo>', description: 'Fija el objetivo de la sesión y lo divide en una checklist', kind: 'prompt', workflow: 'directo', requiresArgs: true,
+      prompt: (a) => 'Objetivo de esta sesión: ' + a + '\n\nGuárdalo con `agentes tareas --objetivo "<el objetivo en una línea>"`. Mira antes `agentes tareas` por si ya hay puntos, para no repetirlos. Divídelo en pasos concretos y comprobables, en orden, y añade cada uno con `agentes tareas --añadir "<paso>"` (con `--ticket <clave o URL>` si el paso tiene ticket). No empieces a hacerlos: termina enseñando la checklist con `agentes tareas` y pregunta por cuál empezar. Mientras trabajes en esta conversación, márcalos con `agentes tareas --hecha <n>` al terminarlos y añade los que descubras.' },
     { name: 'maqueta', args: '<tema>', description: 'Maqueta HTML en docs/maquetas/', kind: 'maqueta', workflow: null, requiresArgs: true },
     { name: 'directo', args: '<mensaje>', description: 'Solo este mensaje, sin forma de trabajar', kind: 'prompt', workflow: 'directo', requiresArgs: true, prompt: (a) => a },
   ];

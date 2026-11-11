@@ -5,6 +5,10 @@ use crate::store::{data_dir, now, write_atomic};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// Leer, cambiar y guardar va de una vez: la pestaña y varios agentes pueden tocar la misma checklist.
+static LOCK: Mutex<()> = Mutex::new(());
 
 /// Un punto de la checklist. `ticket`: clave (IDE-23) o URL de un ticket, opcional.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -131,6 +135,31 @@ pub fn store(o: &mut Objetivo) -> Result<(), String> {
     write_atomic(&dir().join(format!("{}.json", o.conversation)), &json)
 }
 
+/// Aplica una operación (list | goal | add | done | undone | remove) sobre lo guardado y lo guarda.
+/// La usan la pestaña Objetivo y `agentes tareas`: cada una manda solo su cambio, así no se pisan.
+pub fn apply(conversation: &str, op: &str, text: &str, ticket: Option<&str>, id: u32) -> Result<Objetivo, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut o = load(conversation)?;
+    if apply_to(&mut o, op, text, ticket, id)? {
+        store(&mut o)?;
+    }
+    Ok(o)
+}
+
+/// La operación sobre el objetivo en memoria. Devuelve si lo ha cambiado.
+fn apply_to(o: &mut Objetivo, op: &str, text: &str, ticket: Option<&str>, id: u32) -> Result<bool, String> {
+    match op {
+        "list" => return Ok(false),
+        "goal" => o.set_goal(text),
+        "add" => o.add(text, ticket).map(|_| ())?,
+        "done" => o.set_done(id, true)?,
+        "undone" => o.set_done(id, false)?,
+        "remove" => o.remove(id)?,
+        other => return Err(format!("Operación desconocida: {other}")),
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +183,25 @@ mod tests {
         assert!(o.add("Un punto", None).is_ok());
         assert_eq!(o.set_done(9, true).unwrap_err(), "No hay ningún punto 9");
         assert_eq!(o.remove(9).unwrap_err(), "No hay ningún punto 9");
+    }
+
+    /// Pestaña y agente mandan cada uno su operación: los cambios de los dos se conservan.
+    #[test]
+    fn las_operaciones_no_se_pisan() {
+        let mut o = Objetivo::default();
+        assert!(apply_to(&mut o, "add", "Paso del agente", None, 0).unwrap());
+        assert!(apply_to(&mut o, "add", "Paso del usuario", Some("IDE-29"), 0).unwrap());
+        assert!(apply_to(&mut o, "done", "", None, 1).unwrap());
+        assert!(apply_to(&mut o, "goal", "  Terminar IDE-29 ", None, 0).unwrap());
+        assert!(!apply_to(&mut o, "list", "", None, 0).unwrap());
+        assert_eq!(o.goal, "Terminar IDE-29");
+        assert_eq!(o.items.len(), 2);
+        assert!(o.items[0].done && !o.items[1].done);
+        assert!(apply_to(&mut o, "undone", "", None, 1).unwrap());
+        assert!(apply_to(&mut o, "remove", "", None, 2).unwrap());
+        assert_eq!(o.items.len(), 1);
+        assert!(apply_to(&mut o, "volar", "", None, 0).is_err());
+        assert!(apply_to(&mut o, "done", "", None, 7).is_err());
     }
 
     #[test]

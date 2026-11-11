@@ -697,31 +697,15 @@ async fn handle(app: &AppHandle, token: &str, line: &str) -> Reply {
             Some(c) => Reply { ok: true, council: Some(c), ..Default::default() },
             None => err(format!("No hay ningún consejo {id}")),
         },
-        Request::Tasks { conversation, op, text, ticket, id } => {
-            let mut o = match crate::objetivo::load(&conversation) {
-                Ok(o) => o,
-                Err(e) => return err(e),
-            };
-            let r = match op.as_str() {
-                "list" => Ok(()),
-                "goal" => { o.set_goal(&text); Ok(()) }
-                "add" => o.add(&text, ticket.as_deref()).map(|_| ()),
-                "done" => o.set_done(id, true),
-                "undone" => o.set_done(id, false),
-                "remove" => o.remove(id),
-                other => Err(format!("Operación desconocida: {other}")),
-            };
-            if let Err(e) = r {
-                return err(e);
-            }
-            if op != "list" {
-                if let Err(e) = crate::objetivo::store(&mut o) {
-                    return err(e);
+        Request::Tasks { conversation, op, text, ticket, id } => match crate::objetivo::apply(&conversation, &op, &text, ticket.as_deref(), id) {
+            Ok(o) => {
+                if op != "list" {
+                    let _ = app.emit("objective-changed", serde_json::json!({ "conversation": o.conversation }));
                 }
-                let _ = app.emit("objective-changed", serde_json::json!({ "conversation": o.conversation }));
+                Reply { ok: true, objective: Some(o), ..Default::default() }
             }
-            Reply { ok: true, objective: Some(o), ..Default::default() }
-        }
+            Err(e) => err(e),
+        },
         Request::Image { cwd, which, path } => {
             let root = repo_root(Path::new(&cwd));
             let id = match crate::project::diagram_resolve(&root, &which) {
