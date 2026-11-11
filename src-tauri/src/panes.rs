@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Pane {
     /// Id del panel (estable aunque haya relevo de cuenta).
@@ -33,7 +33,7 @@ pub struct Pane {
     pub dir: String,
     pub worktree: Option<String>,
     pub branch: Option<String>,
-    /// running | done | error
+    /// running | done | error | stopped (detenido a mano) | interrupted (la app se cerró con él en marcha)
     pub status: String,
     pub exit_code: Option<i32>,
     pub started_at: String,
@@ -45,6 +45,9 @@ pub struct Pane {
     pub relays: Vec<String>,
     #[serde(default)]
     pub conversation: Option<String>,
+    /// Viene de una sesión anterior de la app: su terminal ya no existe, se enseña su log.
+    #[serde(default)]
+    pub restored: bool,
 }
 
 /// Lo necesario para relanzar el carril en otra cuenta o CLI.
@@ -58,6 +61,25 @@ struct Spec {
     stdin: Option<String>,
     dir: PathBuf,
     tried: Vec<String>,
+}
+
+/// Los paneles se guardan en disco: siguen en la vista Agentes de su proyecto tras cerrar la app,
+/// hasta que el usuario los borra.
+fn saved_path() -> PathBuf {
+    data_dir().join("paneles.json")
+}
+
+/// Lee los paneles guardados. Los que estaban en marcha murieron con la app: «interrumpido».
+fn restore(json: &str) -> Vec<Pane> {
+    let mut list: Vec<Pane> = serde_json::from_str(json).unwrap_or_default();
+    for p in &mut list {
+        p.restored = true;
+        p.term = 0;
+        if p.status == "running" {
+            p.status = "interrupted".into();
+        }
+    }
+    list
 }
 
 #[derive(Default)]
@@ -193,6 +215,18 @@ fn quote_cmd(s: &str) -> String {
 }
 
 impl Panes {
+    /// Paneles de sesiones anteriores (`paneles.json`).
+    pub fn load() -> Self {
+        let list = restore(&std::fs::read_to_string(saved_path()).unwrap_or_default());
+        let next = list.iter().map(|p| p.id).max().unwrap_or(0);
+        Panes { list: Mutex::new(list), next: std::sync::atomic::AtomicU32::new(next), ..Default::default() }
+    }
+
+    fn save(&self) {
+        let json = serde_json::to_string_pretty(&*self.list.lock().unwrap()).unwrap_or_else(|_| "[]".into());
+        let _ = crate::store::write_atomic(&saved_path(), &json);
+    }
+
     pub fn list(&self, project: &str) -> Vec<Pane> {
         self.list.lock().unwrap().iter().filter(|p| p.project == project).cloned().collect()
     }
@@ -201,19 +235,50 @@ impl Panes {
         self.list.lock().unwrap().iter().find(|p| p.id == id).cloned()
     }
 
-    fn finish(&self, key: &str, code: i32) {
+    fn finish(&self, key: &str, code: i32, stopped: bool) {
         if let Some(p) = self.list.lock().unwrap().iter_mut().find(|p| p.key == key) {
             self.specs.lock().unwrap().remove(&p.id);
-            p.status = if code == 0 { "done".into() } else { "error".into() };
+            p.status = if stopped { "stopped".into() } else if code == 0 { "done".into() } else { "error".into() };
             p.exit_code = Some(code);
             p.ended_at = Some(now());
         }
+        self.save();
         self.changed.notify_waiters();
     }
 
+    /// Borra el panel de la lista (y su log si es de la app; el `agente.log` de un worktree se queda).
     pub fn remove(&self, id: u32) {
-        self.list.lock().unwrap().retain(|p| p.id != id);
+        let removed = {
+            let mut list = self.list.lock().unwrap();
+            let p = list.iter().find(|p| p.id == id).cloned();
+            list.retain(|p| p.id != id);
+            p
+        };
         self.specs.lock().unwrap().remove(&id);
+        if let Some(p) = removed {
+            let log = PathBuf::from(&p.log);
+            if log.starts_with(data_dir().join("logs")) {
+                let _ = std::fs::remove_file(log);
+            }
+        }
+        self.save();
+    }
+
+    /// Salida guardada de un panel (el final, si es muy larga) para los de sesiones anteriores.
+    pub fn log_text(&self, id: u32) -> String {
+        const MAX: u64 = 512 * 1024;
+        let Some(p) = self.get(id) else { return String::new() };
+        let Ok(mut f) = std::fs::File::open(&p.log) else {
+            return format!("\x1b[2m(No queda el log: {})\x1b[0m\r\n", p.log);
+        };
+        use std::io::{Read, Seek, SeekFrom};
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        if len > MAX {
+            let _ = f.seek(SeekFrom::Start(len - MAX));
+        }
+        let mut buf = Vec::new();
+        let _ = f.read_to_end(&mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
     }
 
     /// Terminal actual de un panel.
@@ -349,14 +414,14 @@ fn start(app: &AppHandle, pane: Pane, spec: Spec, acc: &Account) -> Result<Pane,
                             p.relays.push(format!("Sin relevo posible: {e}"));
                         }
                         let key = panes.get(id).map(|p| p.key).unwrap_or_default();
-                        panes.finish(&key, code);
+                        panes.finish(&key, code, false);
                         notify_finished(&app3, &panes, id);
                     }
                     let _ = app3.emit("panes-changed", ());
                 });
             }
             None => {
-                p2.finish(&k2, code);
+                p2.finish(&k2, code, stopped);
                 notify_finished(&app2, &p2, id);
                 let _ = app2.emit("panes-changed", ());
             }
@@ -374,6 +439,7 @@ fn start(app: &AppHandle, pane: Pane, spec: Spec, acc: &Account) -> Result<Pane,
             None => list.push(pane.clone()),
         }
     }
+    panes.save();
     let _ = app.emit("panes-changed", ());
     Ok(pane)
 }
@@ -489,6 +555,7 @@ pub fn launch(app: &AppHandle, req: LaunchRequest, loads: &[accounts::Load]) -> 
         account: acc.name.clone(),
         relays: Vec::new(),
         conversation: req.conversation.clone(),
+        restored: false,
     };
     let tried = vec![acc.id.clone()];
     let exe = if Some(cli_name.as_str()) == cli_path.file_stem().and_then(|n| n.to_str()) { cli.clone() } else { cli_name.clone() };
@@ -853,6 +920,8 @@ fn print_pane(p: &Pane) {
     let state = match p.status.as_str() {
         "running" => "en marcha".to_string(),
         "done" => "terminado (0)".to_string(),
+        "stopped" => "detenido".to_string(),
+        "interrupted" => "interrumpido (se cerró la app)".to_string(),
         _ => format!("error ({})", p.exit_code.unwrap_or(-1)),
     };
     println!("{}\t{}\t{}\t{}\t{}\t{}", p.id, state, p.name, p.account.as_deref().unwrap_or("principal"), p.worktree.as_deref().unwrap_or("-"), p.log);
@@ -980,6 +1049,7 @@ impl From<PaneOut> for Pane {
             ended_at: None,
             log: p.log,
             conversation: None,
+            restored: false,
         }
     }
 }
@@ -1282,6 +1352,24 @@ mod tests {
         assert_eq!(project_dir(&s(&fuera), None), s(&fuera));
         assert_eq!(project_dir(&s(&fuera), Some(s(&base.join("no-existe")))), s(&fuera));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn paneles_de_una_sesion_anterior() {
+        let json = r#"[
+            {"id":3,"term":7,"project":"/p","name":"a","cli":"codex","command":"codex","dir":"/p","worktree":"a","branch":"agente/a",
+             "status":"running","exitCode":null,"startedAt":"t","endedAt":null,"log":"/p/agente.log","account":null,"relays":[]},
+            {"id":5,"term":9,"project":"/p","name":"b","cli":"claude","command":"claude","dir":"/p","worktree":null,"branch":null,
+             "status":"done","exitCode":0,"startedAt":"t","endedAt":"t2","log":"/l.log","account":null,"relays":[],"conversation":"c"}
+        ]"#;
+        let list = restore(json);
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().all(|p| p.restored && p.term == 0));
+        assert_eq!(list[0].status, "interrupted");
+        assert_eq!(list[1].status, "done");
+        // Ida y vuelta: lo que se guarda se vuelve a leer.
+        assert_eq!(restore(&serde_json::to_string(&list).unwrap()).len(), 2);
+        assert!(restore("basura").is_empty());
     }
 
     #[test]

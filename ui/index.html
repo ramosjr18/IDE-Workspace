@@ -118,6 +118,12 @@
   .m-head .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .m-head .sub { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; font: 11.5px ui-monospace, Menlo, monospace; }
   .m-head .state { color: var(--muted); white-space: nowrap; font: 11.5px ui-monospace, Menlo, monospace; }
+  .m-head .tag { flex: none; font-size: 11px; padding: 0 7px; border-radius: 9px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .m-pane.running .tag { color: var(--me); border-color: color-mix(in srgb, var(--me) 50%, var(--border)); }
+  .m-pane.done .tag { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, var(--border)); }
+  .m-pane.error .tag { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, var(--border)); }
+  .m-pane.interrupted .tag, .m-pane.stopped .tag { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+  .m-pane.interrupted .dot, .m-pane.stopped .dot { background: var(--warn); }
   .m-head button.icon { padding: 2px 5px; border: 0; background: transparent; color: var(--muted); }
   .m-head button.icon:hover { color: var(--text); }
   .m-body { flex: 1; min-height: 0; padding: 4px 6px; }
@@ -1181,7 +1187,7 @@
   }
   listen('pane-finished', (e) => {
     const p = e.payload;
-    const estado = p.status === 'done' ? 'terminó bien (código 0)' : `terminó con error (código ${p.exitCode ?? '?'})`;
+    const estado = p.status === 'done' ? 'terminó bien (código 0)' : p.status === 'stopped' ? 'lo detuvo el usuario' : `terminó con error (código ${p.exitCode ?? '?'})`;
     addAviso(p.conversation, `- Panel #${p.id} «${p.name}» ${estado}.${p.worktree ? ` Worktree: ${p.worktree}.` : ''} Log: ${p.log}\n  Últimas líneas:\n${(p.tail || '').split('\n').map((l) => '    ' + l).join('\n')}`);
   });
   listen('council-finished', (e) => {
@@ -3054,7 +3060,9 @@
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
     return h ? `${h} h ${m} min` : m ? `${m} min ${ss} s` : `${ss} s`;
   };
-  const paneState = (p) => p.status === 'running' ? `en marcha · ${elapsed(p.startedAt)}` : p.status === 'done' ? `terminado · ${elapsed(p.startedAt, p.endedAt)}` : `error ${p.exitCode ?? ''} · ${elapsed(p.startedAt, p.endedAt)}`;
+  const paneState = (p) => p.status === 'running' ? elapsed(p.startedAt) : p.endedAt ? elapsed(p.startedAt, p.endedAt) : '';
+  const PANE_TAG = { running: 'En curso', done: 'Finalizado', stopped: 'Detenido', interrupted: 'Interrumpido' };
+  const paneTag = (p) => PANE_TAG[p.status] || `Error${p.exitCode != null ? ` ${p.exitCode}` : ''}`;
 
   function layoutMosaic() {
     const m = $('mosaic');
@@ -3102,7 +3110,11 @@
     v.sub.textContent = [p.branch, p.worktree ? `.claude/worktrees/${p.worktree}` : null].filter(Boolean).join(' · ') || p.command;
     v.sub.title = `${p.command}\n${p.dir}\nLog: ${p.log}`;
     v.state.textContent = paneState(p);
+    v.tag.textContent = paneTag(p);
+    v.tag.title = p.status === 'interrupted' ? 'La app se cerró mientras trabajaba. Su worktree y su log siguen ahí.' : '';
     v.stop.hidden = p.status !== 'running';
+    // Borrar solo cuando ya no trabaja.
+    v.close.hidden = p.status === 'running';
   }
 
   function makePane(p) {
@@ -3111,23 +3123,25 @@
     term.loadAddon(fit);
     const body = el('div', { className: 'm-body' });
     const btn = (icon, title) => el('button', { type: 'button', className: 'icon', title }, el('i', { className: `codicon codicon-${icon}` }));
-    const v = { pane: p, term, fit, title: el('span', { className: 'title' }), acc: el('span', { className: 'acc' }), relay: el('span', { className: 'relay' }), sub: el('span', { className: 'sub' }), state: el('span', { className: 'state' }),
-      stop: btn('debug-stop', 'Detener'), max: btn('screen-full', 'Maximizar (doble clic en la cabecera)'), close: btn('close', 'Cerrar el panel') };
-    const head = el('div', { className: 'm-head' }, el('span', { className: 'dot' }), v.title, v.acc, v.relay, v.sub, v.state, v.stop, v.max, v.close);
+    const v = { pane: p, term, fit, title: el('span', { className: 'title' }), acc: el('span', { className: 'acc' }), relay: el('span', { className: 'relay' }), sub: el('span', { className: 'sub' }), state: el('span', { className: 'state' }), tag: el('span', { className: 'tag' }),
+      stop: btn('debug-stop', 'Detener'), max: btn('screen-full', 'Maximizar (doble clic en la cabecera)'), close: btn('trash', 'Borrar de la lista') };
+    const head = el('div', { className: 'm-head' }, el('span', { className: 'dot' }), v.title, v.acc, v.relay, v.sub, v.state, v.tag, v.stop, v.max, v.close);
     v.el = el('div', { className: 'm-pane' }, head, body);
     const toggleMax = () => { v.el.classList.toggle('max'); layoutMosaic(); };
     head.addEventListener('dblclick', (e) => { if (!e.target.closest('button')) toggleMax(); });
     v.max.addEventListener('click', toggleMax);
     v.stop.addEventListener('click', () => invoke('pane_kill', { id: p.id }));
     v.close.addEventListener('click', async () => {
-      if (v.pane.status === 'running' && !(await window.__TAURI__.dialog.ask(`«${v.pane.name}» sigue trabajando. ¿Detenerlo y cerrar el panel?`, { title: 'Cerrar panel', kind: 'warning' }))) return;
+      if (v.pane.status === 'running') return;
+      const wt = v.pane.worktree ? ' Su worktree y su rama se quedan.' : '';
+      if (!(await window.__TAURI__.dialog.ask(`¿Borrar «${v.pane.name}» de la vista Agentes?${wt}`, { title: 'Borrar agente', kind: 'warning' }))) return;
       invoke('pane_close', { id: p.id });
     });
     $('mosaic').appendChild(v.el);
     term.open(body);
     // La terminal del panel cambia en cada relevo de cuenta: siempre la actual (v.pane.term).
-    term.onData((data) => invoke('term_write', { id: v.pane.term, data }));
-    term.onResize(({ cols, rows }) => invoke('term_resize', { id: v.pane.term, cols, rows }));
+    term.onData((data) => { if (!v.pane.restored) invoke('term_write', { id: v.pane.term, data }); });
+    term.onResize(({ cols, rows }) => { if (!v.pane.restored) invoke('term_resize', { id: v.pane.term, cols, rows }); });
     term.registerLinkProvider({
       provideLinks(y, cb) {
         const line = term.buffer.active.getLine(y - 1)?.translateToString() || '';
@@ -3146,6 +3160,12 @@
 
   // Pinta la salida guardada de la terminal actual del panel y sigue la nueva.
   function attachTerm(v) {
+    // De una sesión anterior de la app: su terminal ya no existe; se pinta lo que dejó en el log.
+    if (v.pane.restored) {
+      v.attached = null;
+      invoke('pane_log', { id: v.pane.id }).then((data) => v.term.write(data)).catch(() => {});
+      return;
+    }
     v.attached = v.pane.term;
     v.replayed = false;
     v.pending = [];
@@ -3173,7 +3193,7 @@
         v.pane = p;
         renderPaneHead(v);
         // Relevo: otra terminal en el mismo panel
-        if (v.attached !== p.term) { v.term.write('\r\n\x1b[33m── relevo de cuenta ──\x1b[0m\r\n'); attachTerm(v); }
+        if (!p.restored && v.attached !== p.term) { v.term.write('\r\n\x1b[33m── relevo de cuenta ──\x1b[0m\r\n'); attachTerm(v); }
       } else makePane(p);
     }
     const running = paneList.filter((p) => p.status === 'running').length;

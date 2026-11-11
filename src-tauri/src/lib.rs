@@ -803,6 +803,12 @@ fn pane_close(app: AppHandle, terms: State<'_, term::Terminals>, panes: State<'_
     let _ = app.emit("panes-changed", ());
 }
 
+/// Salida guardada de un panel de una sesión anterior (su terminal ya no existe).
+#[tauri::command]
+fn pane_log(panes: State<'_, Arc<panes::Panes>>, id: u32) -> String {
+    panes.log_text(id)
+}
+
 #[tauri::command]
 fn term_write(terms: State<'_, term::Terminals>, id: u32, data: String) {
     terms.write(id, &data)
@@ -838,7 +844,7 @@ pub fn run() {
         .manage(Arc::new(council::Runs::default()))
         .manage(CurrentProject(Mutex::new(initial.clone())))
         .manage(term::Terminals::default())
-        .manage(Arc::new(panes::Panes::default()))
+        .manage(Arc::new(panes::Panes::load()))
         .manage(workspace::Watcher::default())
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -905,6 +911,7 @@ pub fn run() {
             pane_launch,
             pane_kill,
             pane_close,
+            pane_log,
             term_write,
             term_resize,
             term_kill
