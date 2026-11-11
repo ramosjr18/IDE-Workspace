@@ -20,6 +20,7 @@ mod panes;
 mod plane;
 mod project;
 mod roles;
+mod salida_viva;
 mod store;
 mod stream;
 mod term;

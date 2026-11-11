@@ -37,11 +37,14 @@ pub struct Job {
     pub log: Option<PathBuf>,
     /// Se llama con el código de salida cuando termina.
     pub on_exit: Option<Box<dyn FnOnce(i32) + Send>>,
+    /// Transforma la salida antes de pintarla y guardarla (p. ej. el JSON de `claude -p` a texto).
+    /// Recibe `None` al final, para vaciar lo pendiente.
+    pub filter: Option<Box<dyn FnMut(Option<&str>) -> String + Send>>,
 }
 
 impl Job {
     pub fn new(command: String, file: PathBuf, args: Vec<String>, cwd: PathBuf) -> Self {
-        Job { command, file, args, cwd, env: Vec::new(), log: None, on_exit: None }
+        Job { command, file, args, cwd, env: Vec::new(), log: None, on_exit: None, filter: None }
     }
 }
 
@@ -90,12 +93,20 @@ impl Terminals {
         let app_out = app.clone();
         let buffers = self.buffers.clone();
         let mut log = job.log.as_ref().and_then(|p| std::fs::File::create(p).ok());
+        let mut filter = job.filter;
         let reader_thread = std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             let mut pending: Vec<u8> = Vec::new();
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+            let mut eof = false;
+            while !eof {
+                let data = match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        eof = true;
+                        match filter.as_mut() {
+                            Some(f) => f(None),
+                            None => String::new(),
+                        }
+                    }
                     Ok(n) => {
                         pending.extend_from_slice(&buf[..n]);
                         let valid = match std::str::from_utf8(&pending) {
@@ -105,22 +116,29 @@ impl Terminals {
                         };
                         let data = String::from_utf8_lossy(&pending[..valid]).to_string();
                         pending.drain(..valid);
-                        if let Some(f) = log.as_mut() {
-                            let _ = f.write_all(crate::env::strip_ansi(&data).replace('\r', "").as_bytes());
+                        match filter.as_mut() {
+                            Some(f) => f(Some(&data)),
+                            None => data,
                         }
-                        if let Some(buf) = buffers.lock().unwrap().get_mut(&id) {
-                            buf.push_str(&data);
-                            if buf.len() > REPLAY_MAX {
-                                let mut cut = buf.len() - REPLAY_MAX;
-                                while !buf.is_char_boundary(cut) {
-                                    cut += 1;
-                                }
-                                buf.drain(..cut);
-                            }
+                    }
+                };
+                if data.is_empty() {
+                    continue;
+                }
+                if let Some(f) = log.as_mut() {
+                    let _ = f.write_all(crate::env::strip_ansi(&data).replace('\r', "").as_bytes());
+                }
+                if let Some(buf) = buffers.lock().unwrap().get_mut(&id) {
+                    buf.push_str(&data);
+                    if buf.len() > REPLAY_MAX {
+                        let mut cut = buf.len() - REPLAY_MAX;
+                        while !buf.is_char_boundary(cut) {
+                            cut += 1;
                         }
-                        let _ = app_out.emit("term-output", Output { id, data });
+                        buf.drain(..cut);
                     }
                 }
+                let _ = app_out.emit("term-output", Output { id, data });
             }
         });
 

@@ -372,6 +372,12 @@ fn start(app: &AppHandle, pane: Pane, spec: Spec, acc: &Account) -> Result<Pane,
     let panes = app.state::<Arc<Panes>>().inner().clone();
     let cli_path = if Path::new(&spec.exe).is_file() { PathBuf::from(&spec.exe) } else { which(&spec.exe).ok_or_else(|| format!("No encuentro «{}» en el PATH", spec.exe))? };
     let mut job_env = acc.env();
+    // `claude -p` en texto no escribe nada hasta acabar: se pide JSON y se traduce a texto en vivo.
+    let live = crate::salida_viva::SalidaViva::extra_args(&spec.cli, &spec.args);
+    let mut run_args = spec.args.clone();
+    if let Some((_, extra)) = &live {
+        run_args.extend(extra.iter().cloned());
+    }
     let (file, args) = match spec.stdin.as_deref().filter(|s| !s.is_empty()) {
         Some(text) => {
             let briefs = data_dir().join("briefs");
@@ -382,22 +388,26 @@ fn start(app: &AppHandle, pane: Pane, spec: Spec, acc: &Account) -> Result<Pane,
             #[cfg(unix)]
             {
                 let mut a = vec!["-c".to_string(), "exec \"$0\" \"$@\" < \"$AGENTES_BRIEF\"".to_string(), cli_path.to_string_lossy().to_string()];
-                a.extend(spec.args.iter().cloned());
+                a.extend(run_args.iter().cloned());
                 (PathBuf::from("/bin/sh"), a)
             }
             #[cfg(windows)]
             {
-                let line = std::iter::once(cli_path.to_string_lossy().to_string()).chain(spec.args.iter().cloned()).map(|s| quote_cmd(&s)).collect::<Vec<_>>().join(" ");
+                let line = std::iter::once(cli_path.to_string_lossy().to_string()).chain(run_args.iter().cloned()).map(|s| quote_cmd(&s)).collect::<Vec<_>>().join(" ");
                 let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
                 (PathBuf::from(comspec), vec!["/D".into(), "/S".into(), "/C".into(), format!("\"{line} < {}\"", quote_cmd(&brief.to_string_lossy()))])
             }
         }
-        None => (cli_path.clone(), spec.args.clone()),
+        None => (cli_path.clone(), run_args.clone()),
     };
     let shown = &pane.command;
     let mut job = Job::new(format!("{shown}{}", if spec.stdin.is_some() { " < brief" } else { "" }), file, args, spec.dir.clone());
     job.env = job_env;
     job.log = Some(PathBuf::from(&pane.log));
+    if let Some((format, _)) = live {
+        let mut viva = crate::salida_viva::SalidaViva::new(format, &spec.dir);
+        job.filter = Some(Box::new(move |data| viva.push(data)));
+    }
     let (p2, k2, app2, id) = (panes.clone(), pane.key.clone(), app.clone(), pane.id);
     job.on_exit = Some(Box::new(move |code| {
         // ¿Se quedó sin cuota? Relevo en el mismo panel; si no, termina.
