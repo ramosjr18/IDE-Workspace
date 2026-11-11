@@ -1,13 +1,13 @@
 /* Estilos de la pestaña Objetivo: Tailwind 4 con los tokens y estilos de Plane (@makeplane/propel)
-   y la configuración de su web (objetivos/plane/packages/tailwind-config). Se compila en build.mjs
+   y las piezas de Plane copiadas en ../plane. Se compila en build.mjs
    y va dentro del Shadow DOM de la vista. */
 @import "tailwindcss";
 @import "@makeplane/propel/styles";
 
 /* Clases que usan nuestras vistas y las piezas de Plane que reutilizamos. */
 @source "./";
-@source "../../plane/packages/blocks/src/layout";
-@source "../../plane/packages/blocks/src/icons";
+@source "../plane/blocks/src/layout";
+@source "../plane/blocks/src/icons";
 
 :host {
   display: block;

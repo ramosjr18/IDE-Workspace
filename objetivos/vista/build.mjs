@@ -1,6 +1,6 @@
 // Empaqueta la pestaña Objetivo en ui/vendor/objetivos/objetivos.js (como la pizarra con Excalidraw).
 // 1) Tailwind compila src/estilos.css → dist/objetivos.css.  2) esbuild empaqueta src/entry.tsx con
-// ese CSS dentro, y resuelve los @plane/... al código de nuestra copia de Plane (objetivos/plane).
+// ese CSS dentro, y resuelve los @plane/... a las piezas de Plane copiadas en ./plane (ver su README).
 import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const plane = resolve(here, "../plane/packages");
+const plane = resolve(here, "plane");
 const out = resolve(here, "../../ui/vendor/objetivos");
 
 mkdirSync(join(here, "dist"), { recursive: true });
@@ -34,8 +34,8 @@ await build({
   define: { "process.env.NODE_ENV": '"production"' },
   loader: { ".css": "text" },
   alias: {
-    // Las piezas de Plane están en ../plane: al buscar `react` desde ahí se llegaría antes al React 18
-    // de la raíz de la app (el de Excalidraw) que al nuestro. Todo usa el React 19 de esta carpeta.
+    // Todo usa el React 19 de esta carpeta: desde otras rutas se podría llegar al React 18 de la raíz
+    // de la app (el de Excalidraw) y habría dos Reacts.
     react: join(here, "node_modules/react"),
     "react-dom": join(here, "node_modules/react-dom"),
     "@plane/utils": join(here, "src/plane-utils.ts"),
