@@ -150,11 +150,11 @@ Scripts de las pruebas: `docs/plane-pruebas/plane-wsl.sh` (como root en WSL, en 
 puertos 55432/8110) y `docs/plane-pruebas/plane-windows.ps1` (en `%LOCALAPPDATA%\plane-prueba`, puertos
 55433/8111). Las rutas están escritas para este equipo.
 
-### Restos de las pruebas (se pueden borrar)
+### Restos de las pruebas
 
-- WSL: `/var/tmp/plane-embebido` (Postgres parado) y el usuario de sistema `plane`.
-- Windows: `%LOCALAPPDATA%\plane-prueba` (Postgres y API parados).
-- `uv` deja caché en `%LOCALAPPDATA%\uv` y `~/.cache/uv`.
+Borrados el 11/11/2026: `/var/tmp/plane-embebido` y el usuario `plane` en WSL,
+`%LOCALAPPDATA%\plane-prueba` en Windows y las cachés de `uv`. Los scripts de arriba lo vuelven a
+montar todo desde cero.
 
 ## Riesgos
 
