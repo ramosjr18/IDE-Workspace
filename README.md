@@ -284,3 +284,9 @@ En Windows PowerShell, usa `cd src-tauri; cargo test` (con `;` en lugar de `&&`)
 - Los agentes se ejecutan sin pedir permisos (`--dangerously-skip-permissions`, `--yolo`…). Pueden modificar archivos del proyecto.
 - Cada respuesta tiene un tiempo máximo de 10 minutos.
 - Cada agente usa su configuración habitual. Por ejemplo, Claude lee tu `~/.claude/CLAUDE.md` global, así que sus instrucciones también se aplican dentro de la app.
+
+## Licencia
+
+[AGPL-3.0-only](LICENSE). La pestaña Objetivo reutiliza código de [Plane](objetivos/vista/plane/README.md)
+(Plane Software, Inc. y colaboradores, AGPL-3.0) y `@makeplane/propel`; sus archivos conservan su
+copyright. Las versiones publicadas: [releases](docs/releases.md).

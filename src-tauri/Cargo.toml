@@ -2,6 +2,7 @@
 name = "ide-workspace-chat"
 version = "1.0.0"
 description = "App de escritorio para chatear con agentes CLI"
+license = "AGPL-3.0-only"
 edition = "2021"
 
 [lib]
