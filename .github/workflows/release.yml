@@ -1,0 +1,172 @@
+# Release de Chat de agentes (docs/releases.md).
+#
+# Se lanza a mano (Actions → Release → Run workflow, o `scripts/release.sh publicar <versión> "<notas>"`)
+# con una versión que ya esté en package.json, src-tauri/Cargo.toml y src-tauri/tauri.conf.json
+# (`scripts/release.sh subir <versión>`).
+#
+# 1. preparar: comprueba la versión y crea la release vX.Y.Z como BORRADOR (con las notas y los commits).
+# 2. paquetes: compila macOS (arm64 e Intel), Windows y Linux, firma los paquetes de actualización y los
+#    sube al borrador junto con latest.json (lo genera tauri-action). En Linux, además, el binario suelto
+#    para la instalación «binario» (la estable de WSL).
+# 3. publicar: añade el binario y su sha256 a latest.json y publica la release como la última. Hasta
+#    aquí `releases/latest` sigue sirviendo la anterior: nunca se ve una release a medias.
+#
+# Secretos del repo:
+#   TAURI_SIGNING_PRIVATE_KEY           — clave privada de las actualizaciones (~/.tauri/chat-agentes.key)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — su contraseña (~/.tauri/chat-agentes.key.password)
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versión (p. ej. 1.1.0). Tiene que estar ya en package.json, Cargo.toml y tauri.conf.json.'
+        required: true
+        type: string
+      notas:
+        description: 'Novedades (una línea; se añaden debajo los commits desde la release anterior).'
+        required: true
+        type: string
+        default: 'Mejoras varias.'
+      publicar:
+        description: 'Publicarla al acabar (si no, se queda en borrador para revisarla).'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  preparar:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.crear.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Comprobar la versión
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "✗ «$VERSION» no es una versión X.Y.Z" >&2; exit 1; }
+          pkg=$(jq -r .version package.json)
+          conf=$(jq -r .version src-tauri/tauri.conf.json)
+          cargo=$(grep -m1 -E '^version = ' src-tauri/Cargo.toml | cut -d'"' -f2)
+          if [ "$pkg" != "$VERSION" ] || [ "$conf" != "$VERSION" ] || [ "$cargo" != "$VERSION" ]; then
+            echo "✗ package.json=$pkg tauri.conf.json=$conf Cargo.toml=$cargo; se pide $VERSION" >&2
+            echo "  Ejecuta: scripts/release.sh subir $VERSION  (commit + push) y vuelve a lanzar." >&2
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null || gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "✗ Ya existe v$VERSION (etiqueta o release). Borra el borrador o sube la versión." >&2
+            exit 1
+          fi
+
+      - name: Crear la release en borrador
+        id: crear
+        env:
+          NOTAS: ${{ inputs.notas }}
+        run: |
+          set -euo pipefail
+          prev=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          {
+            echo "$NOTAS"
+            echo
+            echo "## Cambios"
+            if [ -n "$prev" ]; then
+              git log --no-merges --pretty='- %s' "$prev..HEAD"
+            else
+              git log --no-merges --pretty='- %s' -n 40
+            fi
+          } > notas.md
+          gh release create "v$VERSION" --draft --target "$GITHUB_SHA" \
+            --title "Chat de agentes v$VERSION" --notes-file notas.md
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"v$VERSION\") | .id" | head -1)
+          [ -n "$id" ] || { echo "✗ No encuentro el borrador recién creado" >&2; exit 1; }
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
+  paquetes:
+    needs: preparar
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target aarch64-apple-darwin
+          - os: macos-latest
+            args: --target x86_64-apple-darwin
+          - os: windows-latest
+            args: ""
+          - os: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias de Linux
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.os, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.preparar.outputs.release_id }}
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+      # La estable de WSL no usa paquete: el binario tal cual (lo descarga la propia app).
+      - name: Binario suelto de Linux
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          set -euo pipefail
+          mkdir -p suelto
+          install -m 755 src-tauri/target/release/ide-workspace-chat suelto/chat-agentes
+          tar -czf "chat-agentes-$VERSION-linux-x86_64.tar.gz" -C suelto chat-agentes
+          gh release upload "v$VERSION" "chat-agentes-$VERSION-linux-x86_64.tar.gz" --clobber
+
+  publicar:
+    needs: paquetes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Añadir el binario a latest.json y publicar
+        env:
+          NOTAS: ${{ inputs.notas }}
+          PUBLICAR: ${{ inputs.publicar }}
+        run: |
+          set -euo pipefail
+          tgz="chat-agentes-$VERSION-linux-x86_64.tar.gz"
+          gh release download "v$VERSION" -R "$GITHUB_REPOSITORY" -p latest.json -p "$tgz"
+          sha=$(sha256sum "$tgz" | cut -d' ' -f1)
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$tgz"
+          jq --arg url "$url" --arg sha "$sha" --arg notas "$NOTAS" \
+            '.notes = $notas | .binario["linux-x86_64"] = {url: $url, sha256: $sha}' latest.json > latest.nuevo.json
+          mv latest.nuevo.json latest.json
+          cat latest.json
+          gh release upload "v$VERSION" -R "$GITHUB_REPOSITORY" latest.json --clobber
+          if [ "$PUBLICAR" = "true" ]; then
+            gh release edit "v$VERSION" -R "$GITHUB_REPOSITORY" --draft=false --latest
+            echo "Publicada v$VERSION: las apps avisarán de la versión nueva."
+          else
+            echo "v$VERSION queda en borrador. Publícala en GitHub cuando la revises."
+          fi

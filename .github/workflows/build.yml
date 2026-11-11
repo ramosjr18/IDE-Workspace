@@ -1,11 +1,9 @@
-# Genera los instaladores de macOS, Windows y Linux.
-# Se lanza a mano (Actions → Build → Run workflow) o al subir una etiqueta v*.
+# Genera los instaladores de macOS, Windows y Linux como artefactos, para probarlos sin publicar nada.
+# Se lanza a mano (Actions → Build → Run workflow). Las releases las hace release.yml (docs/releases.md).
 name: Build
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
 
 jobs:
   build:
@@ -41,7 +39,11 @@ jobs:
 
       - run: npm ci
 
+      # createUpdaterArtifacts firma los paquetes de actualización: necesita la clave.
       - run: npx tauri build ${{ matrix.args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - uses: actions/upload-artifact@v4
         with:

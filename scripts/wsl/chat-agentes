@@ -1,5 +1,5 @@
 #!/bin/bash
-# Abre la versión estable de Chat de agentes (/opt/chat-agentes/actual).
+# Abre la versión estable de Chat de agentes.
 # Solo cambia si se instala otra versión; los cambios en el repo no le afectan.
 # Se instala en /usr/local/bin/chat-agentes (ver docs/version-estable-wsl.md).
 cd ~
@@ -13,4 +13,11 @@ fi
 if command -v gsettings >/dev/null && [ "$(gsettings get org.gnome.desktop.wm.preferences button-layout 2>/dev/null)" = "'appmenu:close'" ]; then
   gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close' 2>/dev/null
 fi
-exec /opt/chat-agentes/actual/chat-agentes "$@"
+# Versiones: la que instala la propia app al actualizarse (~/.local/share/chat-agentes, docs/releases.md)
+# y la compilada desde el repo con instalar-estable.sh (/opt/chat-agentes). Se abre la instalada más tarde.
+app=/opt/chat-agentes/actual/chat-agentes
+propia="${XDG_DATA_HOME:-$HOME/.local/share}/chat-agentes/actual"
+if [ -x "$propia/chat-agentes" ] && { [ ! -x "$app" ] || [ "$propia/VERSION" -nt /opt/chat-agentes/actual/VERSION ]; }; then
+  app="$propia/chat-agentes"
+fi
+exec "$app" "$@"

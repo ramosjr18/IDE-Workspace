@@ -24,9 +24,13 @@ Si el acceso directo se pierde, se vuelve a crear con PowerShell:
     $s.Arguments = "-d Ubuntu-24.04 -u <usuario> --cd ~ -- /usr/local/bin/chat-agentes"
     $s.Save()
 
-Para saber qué versión está abierta: `cat /opt/chat-agentes/actual/VERSION` (en WSL).
+Para saber qué versión está abierta: menú → App (pone «Versión X»), o en WSL `cat ~/.local/share/chat-agentes/actual/VERSION` / `cat /opt/chat-agentes/actual/VERSION`.
 
 ## Actualizarla
+
+Con las releases (`docs/releases.md`), la propia app avisa de cada versión nueva y se actualiza con
+«Actualizar» → «Reiniciar». Esas versiones van a `~/.local/share/chat-agentes/<versión>` y el lanzador
+abre la instalada más tarde. Lo de abajo sirve para probar un commit concreto sin publicar release.
 
 Desde Windows (PowerShell). Se ejecuta como root, porque el tu usuario de WSL de WSL no tiene sudo:
 
