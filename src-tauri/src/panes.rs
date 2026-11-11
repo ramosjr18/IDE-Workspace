@@ -1002,8 +1002,20 @@ pub fn cli_main(args: Vec<String>) -> i32 {
     }
 }
 
+/// Carpeta del proyecto para `agentes`: la actual si es del proyecto de la app que lanzó el proceso
+/// (AGENTES_PROYECTO); si no, ese proyecto. Un agente puede hacer `cd` fuera de él (Copilot se va a
+/// su carpeta de sesión) y sus diagramas o consejos no deben irse a un «proyecto» que el usuario no ve.
+fn project_dir(cwd: &str, app_project: Option<String>) -> String {
+    match app_project.filter(|p| !p.is_empty() && Path::new(p).is_dir()) {
+        Some(p) if repo_root(Path::new(cwd)) != repo_root(Path::new(&p)) => p,
+        _ => cwd.to_string(),
+    }
+}
+
 fn cli(args: Vec<String>) -> Result<i32, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+    // `cwd` sigue valiendo para las rutas relativas (p. ej. el PNG de --imagen); el proyecto, este.
+    let proyecto = project_dir(&cwd, std::env::var("AGENTES_PROYECTO").ok());
     let mut it = args.into_iter();
     let sub = it.next().unwrap_or_default();
     match sub.as_str() {
@@ -1064,7 +1076,7 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
             Ok(if wait { exit_code(&p) } else { 0 })
         }
         "status" => {
-            let r = request(serde_json::json!({ "cmd": "status", "cwd": cwd }))?;
+            let r = request(serde_json::json!({ "cmd": "status", "cwd": proyecto }))?;
             let list = r.panes.unwrap_or_default();
             if list.is_empty() {
                 println!("No hay paneles en este proyecto.");
@@ -1080,7 +1092,7 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
             match first.as_deref() {
                 Some("--listar") => {
                     // Lee los archivos directamente: funciona aunque la app esté cerrada.
-                    let root = repo_root(Path::new(&cwd));
+                    let root = repo_root(Path::new(&proyecto));
                     println!("id\ttítulo\tformato\tcreado");
                     let board = crate::project::board_get(&root).is_some();
                     if board {
@@ -1097,7 +1109,7 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
                 }
                 Some("--leer") => {
                     let arg: String = it.next().ok_or("Uso: agentes pizarra --leer <id|título|proyecto>")?;
-                    println!("{}", crate::project::board_text(&repo_root(Path::new(&cwd)), &arg)?);
+                    println!("{}", crate::project::board_text(&repo_root(Path::new(&proyecto)), &arg)?);
                     return Ok(0);
                 }
                 Some("--imagen") => {
@@ -1109,7 +1121,7 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
                         ruta_p = Path::new(&cwd).join(ruta_p);
                     }
                     let ruta_abs = ruta_p.to_string_lossy().to_string();
-                    request(serde_json::json!({ "cmd": "image", "cwd": cwd, "which": which, "path": ruta_abs }))?;
+                    request(serde_json::json!({ "cmd": "image", "cwd": proyecto, "which": which, "path": ruta_abs }))?;
                     println!("Imagen guardada en {ruta_abs}");
                     return Ok(0);
                 }
@@ -1144,7 +1156,7 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
                     s
                 }
             };
-            let r = request(serde_json::json!({ "cmd": "board", "cwd": cwd, "title": title, "format": format, "text": text }))?;
+            let r = request(serde_json::json!({ "cmd": "board", "cwd": proyecto, "title": title, "format": format, "text": text }))?;
             println!("Diagrama en la pizarra del usuario (id {}).", r.board.unwrap_or_default());
             Ok(0)
         }
@@ -1184,7 +1196,7 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
                 if tema.is_empty() {
                     return Err("Uso: agentes consejo --tema \"…\" [--participantes claude,codex:abogado] [--moderador claude] [--resultado adr|politica|nota] [--contexto archivo]".into());
                 }
-                let r = request(serde_json::json!({ "cmd": "council", "cwd": cwd, "topic": tema, "members": participantes, "moderator": moderador, "output": resultado, "context": contexto, "conversationId": conversation_id }))?;
+                let r = request(serde_json::json!({ "cmd": "council", "cwd": proyecto, "topic": tema, "members": participantes, "moderator": moderador, "output": resultado, "context": contexto, "conversationId": conversation_id }))?;
                 let c = r.council.ok_or("Sin respuesta")?;
                 println!("Consejo convocado: {}", c.id);
                 println!("Tema: {}", c.topic);
@@ -1249,6 +1261,28 @@ fn cli(args: Vec<String>) -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un agente que hace `cd` fuera del proyecto (Copilot a su carpeta de sesión) sigue usando el
+    /// proyecto de la app; dentro del proyecto, o sin proyecto de la app, se usa la carpeta actual.
+    #[test]
+    fn agentes_usa_el_proyecto_de_la_app_si_el_agente_sale_de_el() {
+        let base = std::env::temp_dir().join(format!("proyecto-{}", uuid::Uuid::new_v4()));
+        let repo = base.join("repo");
+        let sub = repo.join("sub");
+        let fuera = base.join("sesion-copilot");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&fuera).unwrap();
+        if git(&repo, &["init", "-q"]).is_err() {
+            return; // sin git en esta máquina
+        }
+        let s = |p: &Path| p.to_string_lossy().to_string();
+        assert_eq!(project_dir(&s(&fuera), Some(s(&repo))), s(&repo));
+        assert_eq!(project_dir(&s(&sub), Some(s(&repo))), s(&sub));
+        assert_eq!(project_dir(&s(&repo), Some(s(&repo))), s(&repo));
+        assert_eq!(project_dir(&s(&fuera), None), s(&fuera));
+        assert_eq!(project_dir(&s(&fuera), Some(s(&base.join("no-existe")))), s(&fuera));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn nombres_de_worktree() {
