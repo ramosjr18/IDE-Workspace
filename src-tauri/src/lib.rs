@@ -22,6 +22,7 @@ mod roles;
 mod store;
 mod stream;
 mod term;
+mod update;
 mod workflows;
 mod workspace;
 mod usage;
@@ -164,6 +165,29 @@ fn write_file(current: State<'_, CurrentProject>, path: String, content: String)
 #[tauri::command]
 fn save_download(path: String, data: Vec<u8>) -> Result<(), String> {
     std::fs::write(&path, data).map_err(|e| format!("No se pudo guardar {path}: {e}"))
+}
+
+/// Versión de la app y cómo se instaló (para el menú y el aviso de actualización).
+#[tauri::command]
+fn app_version(app: AppHandle) -> serde_json::Value {
+    serde_json::json!({ "version": app.package_info().version.to_string(), "mode": update::mode(), "repo": update::REPO })
+}
+
+/// ¿Hay una release más nueva en GitHub? `null` si esta es la última.
+#[tauri::command]
+async fn update_check(app: AppHandle) -> Result<Option<update::UpdateInfo>, String> {
+    update::check(&app).await
+}
+
+/// Descarga e instala la versión nueva; devuelve la versión instalada.
+#[tauri::command]
+async fn update_install(app: AppHandle) -> Result<String, String> {
+    update::install(&app).await
+}
+
+#[tauri::command]
+fn update_restart(app: AppHandle) {
+    update::restart(&app)
 }
 
 #[tauri::command]
@@ -838,6 +862,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Busy::default())
         .manage(usage::UsageState::default())
         .manage(Running::default())
@@ -863,6 +888,10 @@ pub fn run() {
             recent_projects,
             open_project,
             install_cli,
+            app_version,
+            update_check,
+            update_install,
+            update_restart,
             get_tree,
             read_file,
             read_head,

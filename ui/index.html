@@ -37,6 +37,12 @@
     padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
   }
   .menu-btn { font-size: 18px; padding: 4px 6px; }
+  .update-bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px; font-size: 13.5px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--me) 14%, var(--panel)); }
+  .update-bar[hidden] { display: none; }
+  .update-bar .t { flex: 1; min-width: 0; }
+  .update-bar button { font-size: 12.5px; padding: 3px 10px; }
+  .update-bar button.icon { border: 0; background: transparent; color: var(--muted); }
+  #drawer .version { font-size: 12px; color: var(--muted); padding: 0 4px; }
   .menu-btn .codicon { font-size: 18px; }
   .context { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .context .muted { font-weight: 400; }
@@ -429,6 +435,14 @@
   <button id="menuBtn" class="icon menu-btn" type="button" title="Menú" aria-label="Abrir menú" aria-expanded="false">☰</button>
   <span id="context" class="context"></span>
 </header>
+<!-- Aviso de versión nueva (docs/releases.md) -->
+<div id="updateBar" class="update-bar" role="status" hidden>
+  <i class="codicon codicon-arrow-circle-up"></i>
+  <span id="updateText" class="t"></span>
+  <button id="updateNotes" type="button">Novedades</button>
+  <button id="updateGo" type="button" class="primary">Actualizar</button>
+  <button id="updateLater" type="button" class="icon" title="Ahora no (te lo recuerdo con la siguiente versión)">✕</button>
+</div>
 <div id="drawerBackdrop" hidden></div>
 <nav id="drawer" aria-label="Menú" hidden>
   <section>
@@ -462,6 +476,11 @@
     <h3>Vista</h3>
     <button id="togglePanel" type="button" class="item"><i class="codicon codicon-layout-sidebar-right"></i> <span id="togglePanelText">Ocultar panel de archivos</span></button>
     <button id="toggleAvisos" type="button" class="item" aria-pressed="true"><i class="codicon codicon-bell"></i> Avisar al agente cuando terminen sus agentes</button>
+  </section>
+  <section>
+    <h3>App</h3>
+    <button id="checkUpdates" type="button" class="item"><i class="codicon codicon-sync"></i> Buscar actualizaciones</button>
+    <span id="appVersion" class="version"></span>
   </section>
 </nav>
 <main id="layout">
@@ -3379,6 +3398,69 @@
     usageTimer = setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
   }
   $('tabUsage').addEventListener('click', () => setTab('usage'));
+
+  // ---------- Actualizaciones (docs/releases.md) ----------
+  // Se mira la última release de GitHub al arrancar y cada 6 h. Si hay una más nueva, aviso arriba;
+  // «Actualizar» la descarga e instala (comprobando firma o sha256) y luego se reinicia la app.
+  let updateInfo = null;
+  const updateMsg = (text, kind = 'info') => window.__TAURI__.dialog.message(text, { title: 'Actualizaciones', kind });
+  invoke('app_version').then((v) => { $('appVersion').textContent = `Versión ${v.version}`; }).catch(() => {});
+  async function checkUpdate(manual = false) {
+    let info;
+    try {
+      info = await invoke('update_check');
+    } catch (err) {
+      if (manual) updateMsg(String(err), 'warning');
+      return;
+    }
+    updateInfo = info;
+    if (!info) {
+      $('updateBar').hidden = true;
+      if (manual) updateMsg('Tienes la última versión.');
+      return;
+    }
+    if (!manual && store.get('update:dismissed') === info.version) return;
+    $('updateText').textContent = `Hay una versión nueva: ${info.version} (tienes la ${info.current}).`;
+    $('updateGo').textContent = info.mode === 'manual' ? 'Descargar' : 'Actualizar';
+    $('updateGo').disabled = false;
+    $('updateGo').onclick = installUpdate;
+    $('updateLater').hidden = false;
+    $('updateBar').hidden = false;
+  }
+  async function installUpdate() {
+    const info = updateInfo;
+    if (!info) return;
+    if (info.mode === 'manual') return openUrl(info.page);
+    $('updateGo').disabled = true;
+    $('updateGo').textContent = 'Descargando…';
+    try {
+      const version = await invoke('update_install');
+      $('updateText').textContent = `Versión ${version} instalada. Reinicia la app para usarla.`;
+      $('updateGo').textContent = 'Reiniciar';
+      $('updateGo').disabled = false;
+      $('updateGo').onclick = restartForUpdate;
+      $('updateLater').hidden = true;
+    } catch (err) {
+      $('updateGo').disabled = false;
+      $('updateGo').textContent = 'Reintentar';
+      updateMsg(String(err), 'error');
+    }
+  }
+  async function restartForUpdate() {
+    // Lo que esté trabajando muere con la app: los agentes quedan «Interrumpido» y la respuesta del chat se corta.
+    const running = paneList.filter((p) => p.status === 'running').length;
+    const busy = [liveRequest ? 'el agente del chat está respondiendo' : null, running ? `${running} agente(s) siguen trabajando en la vista Agentes` : null].filter(Boolean);
+    if (busy.length && !(await window.__TAURI__.dialog.ask(`Ahora mismo ${busy.join(' y ')}. Si reinicias, se cortan. ¿Reiniciar igualmente?`, { title: 'Reiniciar', kind: 'warning' }))) return;
+    invoke('update_restart');
+  }
+  $('updateNotes').addEventListener('click', () => { if (updateInfo) openUrl(updateInfo.page); });
+  $('updateLater').addEventListener('click', () => {
+    if (updateInfo) store.set('update:dismissed', updateInfo.version);
+    $('updateBar').hidden = true;
+  });
+  $('checkUpdates').addEventListener('click', () => { closeMenu(); checkUpdate(true); });
+  setTimeout(() => checkUpdate(), 15000);
+  setInterval(() => checkUpdate(), 6 * 3600 * 1000);
   $('refreshUsage').addEventListener('click', () => loadUsage(true));
 
   // ---------- Arranque ----------

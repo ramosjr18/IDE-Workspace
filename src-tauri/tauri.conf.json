@@ -35,6 +35,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU1RTQ5RjVEOTZBRTFFQkIKUldTN0hxNldYWi9rVmRVWG42RHZwd1RGWDVJQkorWHVhdGlUc2Q3czhydDdiSm9XdG8rdFN6aTEK",
+      "endpoints": [
+        "https://github.com/ramosjr18/IDE-Workspace/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
