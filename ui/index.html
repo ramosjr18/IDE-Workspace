@@ -3289,10 +3289,12 @@
       card.appendChild(el('div', { className: 'u-sec', textContent: 'Límites' }));
       for (const l of u.limits) {
         const pct = Math.max(0, Math.min(1, l.percent || 0));
-        const bar = el('div', { className: `u-bar${pct >= 0.9 ? ' full' : pct >= 0.7 ? ' warn' : ''}` }, el('i', { style: `width:${(pct * 100).toFixed(1)}%` }));
+        // Sin límite (Copilot Business): «1.234 / ∞» y sin barra. Con cantidades: «120 / 300 · 40%».
+        const bar = l.unlimited ? null : el('div', { className: `u-bar${pct >= 0.9 ? ' full' : pct >= 0.7 ? ' warn' : ''}` }, el('i', { style: `width:${(pct * 100).toFixed(1)}%` }));
+        const pctText = l.unlimited ? l.amount : l.amount ? `${l.amount} · ${Math.round(pct * 100)}%` : `${Math.round(pct * 100)}%`;
         card.appendChild(el('div', { className: 'u-limit' },
-          el('span', { textContent: l.label }), el('span', { className: 'pct', textContent: `${Math.round(pct * 100)}%` }),
-          bar, el('span', { className: 'reset', textContent: fmtReset(l.resetsAt) })));
+          ...[el('span', { textContent: l.label }), el('span', { className: 'pct', textContent: pctText }),
+            bar, el('span', { className: 'reset', textContent: fmtReset(l.resetsAt) })].filter(Boolean)));
       }
     }
     if (u.days?.some((d) => d.tokens)) {

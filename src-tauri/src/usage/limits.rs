@@ -189,6 +189,7 @@ fn codex_limits(v: &Value) -> Probe {
             label,
             percent: (used / 100.0).clamp(0.0, 1.0),
             resets_at: reset(w.get("resetsAt").unwrap_or(&w["resets_at"])),
+            ..Default::default()
         });
     }
     probe
@@ -544,6 +545,7 @@ fn claude_limits(v: &Value) -> Result<Probe, Failure> {
             label: label.into(),
             percent: (n / 100.0).clamp(0.0, 1.0),
             resets_at: reset(&w["resets_at"]),
+            ..Default::default()
         });
     }
     if probe.limits.is_empty() {
@@ -859,6 +861,7 @@ fn opencode_limits(v: &Value) -> Result<Probe, Failure> {
             label: label.into(),
             percent: (used / limit).clamp(0.0, 1.0),
             resets_at: reset(&m["resetsAt"]),
+            ..Default::default()
         });
     }
     Ok(probe)
@@ -1033,6 +1036,18 @@ fn copilot_limits(v: &Value) -> Result<Probe, Failure> {
     ] {
         let q = &v["quota_snapshots"][key];
         if q["unlimited"].as_bool() == Some(true) {
+            // Sin cupo (planes de empresa, se factura por uso): se enseña lo gastado este mes.
+            let used = q["credits_used"].as_f64().unwrap_or(0.0).max(0.0);
+            if key == "premium_interactions" || used > 0.0 {
+                let label = if key == "premium_interactions" { "Créditos IA (mensual)" } else { label };
+                probe.limits.push(UsageLimit {
+                    label: label.into(),
+                    percent: 0.0,
+                    resets_at: resets.clone(),
+                    amount: Some(format!("{} / ∞", thousands(used.round() as u64))),
+                    unlimited: true,
+                });
+            }
             continue;
         }
         let used = q["percent_remaining"]
@@ -1047,9 +1062,27 @@ fn copilot_limits(v: &Value) -> Result<Probe, Failure> {
             label: label.into(),
             percent: percent.clamp(0.0, 1.0),
             resets_at: resets.clone(),
+            amount: q["entitlement"]
+                .as_f64()
+                .filter(|t| *t > 0.0)
+                .zip(q["remaining"].as_f64())
+                .map(|(t, r)| format!("{} / {}", thousands((t - r).max(0.0).round() as u64), thousands(t.round() as u64))),
+            unlimited: false,
         });
     }
     Ok(probe)
+}
+/// 1234 → «1.234».
+fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push('.');
+        }
+        out.push(c);
+    }
+    out
 }
 async fn copilot(state: &LimitsState, transport: &dyn Transport) -> Result<Probe, Failure> {
     let token = copilot_token().await?;
@@ -1076,6 +1109,8 @@ mod copilot_tests {
         assert_eq!(probe.limits.len(), 2);
         assert!((probe.limits[0].percent - 0.59).abs() < 1e-9);
         assert_eq!(probe.limits[1].percent, 0.25);
+        assert_eq!(probe.limits[0].amount.as_deref(), Some("177 / 300"));
+        assert_eq!(probe.limits[1].amount.as_deref(), Some("250 / 1.000"));
         assert_eq!(
             probe.limits[0].resets_at.as_deref(),
             Some("2030-04-01T00:00:00+00:00")
@@ -1086,6 +1121,26 @@ mod copilot_tests {
         assert!(github_host_token(b"evil.test:\n  oauth_token: never-select").is_none());
         let yaml = b"github.com:\n  user: active\n  users:\n    inactive:\n      oauth_token: wrong-user\n    active:\n      oauth_token: active-user\n";
         assert_eq!(github_host_token(yaml).unwrap().0, "active-user");
+    }
+    #[test]
+    fn business_sin_limites() {
+        let v: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/usage/copilot-business.json"
+        ))
+        .unwrap();
+        let probe = copilot_limits(&v).ok().unwrap();
+        assert_eq!(probe.plan.as_deref(), Some("business"));
+        assert_eq!(probe.limits.len(), 1);
+        let l = &probe.limits[0];
+        assert_eq!(l.label, "Créditos IA (mensual)");
+        assert_eq!(l.amount.as_deref(), Some("1.234 / ∞"));
+        assert!(l.unlimited && l.percent == 0.0);
+        assert_eq!(l.resets_at.as_deref(), Some("2026-12-01T00:00:00+00:00"));
+        let mut r = super::super::UsageRecord::empty("copilot", "Copilot");
+        probe.apply(&mut r);
+        assert!(matches!(r.status, UsageStatus::Ok));
+        assert_eq!(thousands(1_234_567), "1.234.567");
+        assert_eq!(thousands(12), "12");
     }
 }
 

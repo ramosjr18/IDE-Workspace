@@ -15,12 +15,17 @@ pub enum UsageStatus {
     NoData,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageLimit {
     pub label: String,
     pub percent: f64,
     pub resets_at: Option<String>,
+    /// Cantidad usada si la da la CLI: «120 / 300» o, sin límite, «1.234 / ∞» (y entonces no hay barra).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unlimited: bool,
 }
 #[derive(Clone, Default, Serialize)]
 pub struct Today {
