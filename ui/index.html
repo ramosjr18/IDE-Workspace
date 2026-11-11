@@ -109,7 +109,7 @@
   #mosaic { flex: 1; min-height: 0; display: grid; gap: 6px; padding: 6px; background: var(--bg); }
   #mosaic .m-empty { margin: auto; max-width: 520px; color: var(--muted); text-align: center; font-size: 14px; padding: 16px; }
   #mosaic .m-empty code { font: 12px ui-monospace, Menlo, monospace; }
-  .m-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #111; }
+  .m-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #111; container-type: inline-size; }
   .m-pane.running { border-color: color-mix(in srgb, var(--me) 45%, var(--border)); }
   .m-pane.error { border-color: color-mix(in srgb, var(--error) 55%, var(--border)); }
   #mosaic.has-max .m-pane:not(.max) { display: none; }
@@ -121,10 +121,16 @@
   .m-pane.done .dot { background: var(--ok); }
   .m-pane.error .dot { background: var(--error); }
   @keyframes pulse { 50% { opacity: .35; } }
-  .m-head .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-head .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 4em; flex: 0 1 auto; }
+  .m-head .acc { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 3 auto; }
+  /* Los botones y el estado no se encogen: con el panel estrecho se esconde primero lo accesorio. */
+  .m-head button.icon, .m-head .dot, .m-head .tag { flex: none; }
+  @container (max-width: 460px) { .m-head .sub, .m-head .relay { display: none; } }
+  @container (max-width: 360px) { .m-head .acc, .m-head .state { display: none; } }
+  @container (max-width: 250px) { .m-head .btn-max { display: none; } }
   .m-head .sub { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; font: 11.5px ui-monospace, Menlo, monospace; }
   .m-head .state { color: var(--muted); white-space: nowrap; font: 11.5px ui-monospace, Menlo, monospace; }
-  .m-head .tag { flex: none; font-size: 11px; padding: 0 7px; border-radius: 9px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .m-head .tag { flex: none; margin-left: auto; font-size: 11px; padding: 0 7px; border-radius: 9px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
   .m-pane.running .tag { color: var(--me); border-color: color-mix(in srgb, var(--me) 50%, var(--border)); }
   .m-pane.done .tag { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, var(--border)); }
   .m-pane.error .tag { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, var(--border)); }
@@ -148,7 +154,6 @@
   .acc-add { display: flex; gap: 6px; padding: 6px 16px 10px 32px; border-bottom: 1px solid var(--border); }
   .acc-add input { flex: 1; font-size: 13px; padding: 4px 8px; }
   .acc-add button { font-size: 12px; padding: 3px 9px; }
-  .m-head .acc { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
   .m-head .relay { color: var(--warn); font-size: 11.5px; white-space: nowrap; }
   /* Uso de cada CLI */
   #usageView .usage-list { flex: 1; overflow-y: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-content: start; }
@@ -3186,6 +3191,7 @@
     const btn = (icon, title) => el('button', { type: 'button', className: 'icon', title }, el('i', { className: `codicon codicon-${icon}` }));
     const v = { pane: p, term, fit, title: el('span', { className: 'title' }), acc: el('span', { className: 'acc' }), relay: el('span', { className: 'relay' }), sub: el('span', { className: 'sub' }), state: el('span', { className: 'state' }), tag: el('span', { className: 'tag' }),
       stop: btn('debug-stop', 'Detener'), max: btn('screen-full', 'Maximizar (doble clic en la cabecera)'), close: btn('trash', 'Borrar de la lista') };
+    v.max.classList.add('btn-max');
     const head = el('div', { className: 'm-head' }, el('span', { className: 'dot' }), v.title, v.acc, v.relay, v.sub, v.state, v.tag, v.stop, v.max, v.close);
     v.el = el('div', { className: 'm-pane' }, head, body);
     const toggleMax = () => { v.el.classList.toggle('max'); layoutMosaic(); };
