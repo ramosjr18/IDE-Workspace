@@ -1116,11 +1116,17 @@
       conversationId = reply.conversationId;
       loadObjetivo();
       store.set(convKey(), conversationId);
-      // Si la CLI no dio pasos de texto, se muestra la respuesta final
-      if (!bubble.el.querySelector('.step-text')) bubble.steps.appendChild(textEl(reply.message.text || '(sin respuesta)'));
+      if (reply.error) {
+        // Detenido o fallo a medias: lo que hizo el agente queda guardado en la conversación.
+        bubble.el.classList.add('error');
+        bubble.steps.appendChild(Object.assign(document.createElement('div'), { className: 'step-error', textContent: reply.error }));
+      } else if (!bubble.el.querySelector('.step-text')) {
+        // Si la CLI no dio pasos de texto, se muestra la respuesta final
+        bubble.steps.appendChild(textEl(reply.message.text || '(sin respuesta)'));
+      }
       loadConversationList();
       // Diagramas Mermaid en la respuesta: cada uno a su pizarra; se muestra el último.
-      const blocks = mermaidBlocks(reply.message.text);
+      const blocks = reply.error ? [] : mermaidBlocks(reply.message.text);
       if (blocks.length) {
         (async () => {
           let last = null;

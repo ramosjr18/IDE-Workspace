@@ -184,6 +184,9 @@ struct ChatReply {
     conversation_id: String,
     title: String,
     message: store::Message,
+    /// El agente se detuvo o falló a medias: el intercambio se guardó con lo que llegó a hacer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[tauri::command]
@@ -220,8 +223,15 @@ async fn chat(
     if !key.is_empty() && !busy.0.lock().unwrap().insert(key.clone()) {
         return Err("Esta conversación ya está esperando una respuesta".into());
     }
+    // Pasos recibidos, por si el agente se detiene o falla a medias: se guardan con lo que hizo.
+    let partial: Mutex<Vec<stream::Step>> = Mutex::new(Vec::new());
     let on_step = |step: &stream::Step| {
         let _ = app.emit("agent-step", StepEvent { request_id: &request_id, step });
+        let mut p = partial.lock().unwrap();
+        match p.iter_mut().find(|s| s.id == step.id) {
+            Some(s) => *s = step.clone(),
+            None => p.push(step.clone()),
+        }
     };
     // Cuenta: la indicada, o «auto» (la de más cuota libre). Si se agota, la siguiente con saldo;
     // sin ninguna en esta CLI, otra CLI con cuota (docs/plan-cuentas.md §6).
@@ -232,6 +242,8 @@ async fn chat(
     let mut used = ag;
     let mut outcome: Result<agents::RunResult, String> = Err("Sin cuentas disponibles".into());
     let mut session_of: Option<(String, String)> = None;
+    // Sesión que se estaba reanudando: si se detiene a medias, la CLI ya tiene ese intercambio.
+    let mut resumed_of: Option<(String, String)> = None;
     for _ in 0..8 {
         let next = match &fixed {
             Some(a) if tried.is_empty() => Some((ag, a.clone())),
@@ -308,6 +320,7 @@ async fn chat(
             }
             resume = None;
         }
+        resumed_of = resume.as_ref().map(|s| (acc.id.clone(), s.id.clone()));
         session_of = outcome.as_ref().ok().and_then(|r| r.session_id.clone()).map(|id| (acc.id.clone(), id));
         used = cand;
         // El aviso de límite puede llegar como error o como respuesta corta (p. ej. Claude en stream-json).
@@ -326,7 +339,36 @@ async fn chat(
     }
     running.0.lock().unwrap().remove(&request_id);
     busy.0.lock().unwrap().remove(&key);
-    let mut result = outcome?;
+    let mut result = match outcome {
+        Ok(r) => r,
+        Err(e) => {
+            // Si el agente llegó a hacer algo (comandos, cambios, texto), se guarda: lo hecho no
+            // desaparece de la conversación y la sesión de la CLI ya lo recuerda.
+            let mut steps = partial.into_inner().unwrap();
+            if steps.is_empty() {
+                return Err(e);
+            }
+            for s in steps.iter_mut().filter(|s| s.status == "running") {
+                s.status = "error".into();
+            }
+            steps.push(stream::Step { id: "fin".into(), kind: "error".into(), title: String::new(), detail: e.clone(), output: None, status: "error".into(), exit_code: None });
+            let text = steps.iter().filter(|s| s.kind == "text").map(|s| s.detail.as_str()).collect::<Vec<_>>().join("
+
+");
+            let conv = store::append(
+                Some(conv_id.as_str()),
+                &cwd.to_string_lossy(),
+                vec![
+                    store::Message { role: "user".into(), text: shown.filter(|s| !s.trim().is_empty()).unwrap_or(message), agent: None, agent_name: None, ts: String::new(), steps: None },
+                    store::Message { role: "assistant".into(), text: if text.is_empty() { e.clone() } else { text }, agent: Some(used.id.into()), agent_name: Some(used.name.into()), ts: String::new(), steps: steps_for_storage(steps) },
+                ],
+            )?;
+            if let Some((acc_id, sid)) = resumed_of {
+                store::set_session(&conv.id, &acc_id, sid, flow_id)?;
+            }
+            return Ok(ChatReply { conversation_id: conv.id.clone(), title: conv.title.clone(), message: conv.messages.last().cloned().unwrap(), error: Some(e) });
+        }
+    };
     let account_used = tried.last().and_then(|id| accounts::get(id)).and_then(|a| a.name);
     if !relays.is_empty() {
         result.text = format!("*Relevo de cuenta: {}.*\n\n{}", relays.join(" · "), result.text);
@@ -353,7 +395,7 @@ async fn chat(
     if let Some((acc_id, sid)) = session_of {
         store::set_session(&conv.id, &acc_id, sid, flow_id)?;
     }
-    Ok(ChatReply { conversation_id: conv.id.clone(), title: conv.title.clone(), message: conv.messages.last().cloned().unwrap() })
+    Ok(ChatReply { conversation_id: conv.id.clone(), title: conv.title.clone(), message: conv.messages.last().cloned().unwrap(), error: None })
 }
 
 // ---------- Consejo de agentes ----------
